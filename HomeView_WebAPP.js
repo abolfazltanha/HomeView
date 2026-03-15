@@ -81,7 +81,7 @@ Promise.all([
     animation: false,
     sceneModePicker: false,
     baseLayerPicker: false,
-    geocoder: Cesium.IonGeocodeProviderType.GOOGLE,
+    geocoder: false,
     globe: false,
     skyAtmosphere: new Cesium.SkyAtmosphere(),
     infoBox: false,
