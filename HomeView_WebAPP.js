@@ -47,7 +47,7 @@ Promise.all([
   new Promise(r=>chartScript.onload=r),
   new Promise(r=>papaScript.onload=r),
   new Promise(r=>leafletScript.onload=r),
-]).then(async ()=>{
+]).then(()=>{
   // ===== Safari-safe WebGL probe =====
   function webglOK(){
     try{
@@ -75,93 +75,32 @@ Promise.all([
   // ========== Cesium Viewer ==========
   // IMPORTANT:
   // 1) Cesium.Ion.defaultAccessToken must be set in index.html BEFORE this file loads.
-  // 2) We force a visible globe + imagery fallback so the app never shows black/star-only background.
-  let viewer;
-  try {
-const viewer = new Cesium.Viewer("cesiumContainer", {
-  timeline: false,
-  animation: false,
-  sceneModePicker: false,
-  baseLayerPicker: false,
-  geocoder: Cesium.IonGeocodeProviderType.GOOGLE,
-  globe: false,
-  skyAtmosphere: new Cesium.SkyAtmosphere(),
-  infoBox: false,
-  selectionIndicator: false,
-  shadows: false,
-  shouldAnimate: true,
-  contextOptions: {
-    webgl: {
-      powerPreference: 'low-power',
-      antialias: false,
-      alpha: false,
-      depth: true,
-      stencil: false,
-      preserveDrawingBuffer: false
-    }
-  },
-  useBrowserRecommendedResolution: IS_IOS ? true : false,
-  msaaSamples: IS_IOS ? 2 : 4,
-});
-  } catch (e) {
-    // Final fallback: no terrain, but still render a normal globe + map.
-    viewer = new Cesium.Viewer("cesiumContainer", {
-      timeline: false,
-      animation: false,
-      sceneModePicker: false,
-      baseLayerPicker: false,
-      geocoder: false,
-      infoBox: false,
-      selectionIndicator: false,
-      shadows: false,
-      shouldAnimate: true,
-      imageryProvider: new Cesium.OpenStreetMapImageryProvider({
-        url: 'https://tile.openstreetmap.org/'
-      }),
-      contextOptions: {
-        webgl: {
-          powerPreference: 'low-power',
-          antialias: false,
-          alpha: false,
-          depth: true,
-          stencil: false,
-          preserveDrawingBuffer: false
-        }
-      },
-      useBrowserRecommendedResolution: IS_IOS ? true : false,
-      msaaSamples: IS_IOS ? 2 : 4,
-    });
-    let GOOGLE_3D_TILES = null;
-let desiredMSE = IS_IOS ? 14 : 12;
-
-(async function () {
-  try {
-    GOOGLE_3D_TILES = await Cesium.Cesium3DTileset.fromIonAssetId(2275207);
-    viewer.scene.primitives.add(GOOGLE_3D_TILES);
-    await GOOGLE_3D_TILES.readyPromise;
-    GOOGLE_3D_TILES.maximumScreenSpaceError = desiredMSE;
-  } catch (e) {
-    console.warn("Global 3D Tiles not loaded:", e);
-  }
-})();
-  }
-
-
-  
-viewer.scene.globe.show = true;
-viewer.scene.skyBox.show = false;
-viewer.scene.skyAtmosphere.show = true;
-viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#bcd9ea');
-  viewer.scene.skyAtmosphere.show = true;
-  viewer.scene.globe.depthTestAgainstTerrain = true;
-
-  viewer.imageryLayers.removeAll();
-
-viewer.imageryLayers.addImageryProvider(
-  new Cesium.OpenStreetMapImageryProvider({
-    url: "https://tile.openstreetmap.org/"
-  })
-);
+  // 2) We use the same "global 3D tiles" architecture that worked in Cesium Sandcastle.
+  let viewer = new Cesium.Viewer("cesiumContainer", {
+    timeline: false,
+    animation: false,
+    sceneModePicker: false,
+    baseLayerPicker: false,
+    geocoder: Cesium.IonGeocodeProviderType.GOOGLE,
+    globe: false,
+    skyAtmosphere: new Cesium.SkyAtmosphere(),
+    infoBox: false,
+    selectionIndicator: false,
+    shadows: false,
+    shouldAnimate: true,
+    contextOptions: {
+      webgl: {
+        powerPreference: 'low-power',
+        antialias: false,
+        alpha: false,
+        depth: true,
+        stencil: false,
+        preserveDrawingBuffer: false
+      }
+    },
+    useBrowserRecommendedResolution: IS_IOS ? true : false,
+    msaaSamples: IS_IOS ? 2 : 4,
+  });
 
   // ---- Require WebGL2 (Cesium shaders use WebGL2 features like 'flat') ----
   try{
@@ -181,7 +120,7 @@ viewer.imageryLayers.addImageryProvider(
       try{ viewer.scene.requestRender(); }catch(e){}
       if(--bootTicks <= 0) clearInterval(bootKick);
     }, 16);
-  }catch(_){ }
+  }catch(_){}
 
   try{ const fxaa = viewer.scene.postProcessStages.fxaa; if (fxaa) fxaa.enabled = true; }catch(e){}
 
@@ -208,24 +147,23 @@ viewer.imageryLayers.addImageryProvider(
   }
 
   // ========== 3D Tiles ==========
-  let GOOGLE_3D_TILES=null;
+  let GOOGLE_3D_TILES = null;
   let desiredMSE = IS_IOS ? 14 : 12;
 
-  // Load Google Photorealistic 3D Tiles only as an enhancement.
-  // If it fails, the globe + imagery + terrain still remain visible.
+  // Use the same global 3D tiles asset pattern that works in Cesium Sandcastle.
   (async function(){
     try{
-      GOOGLE_3D_TILES = await Cesium.createGooglePhotorealistic3DTileset({ onlyUsingWithGoogleGeocoder: true });
+      GOOGLE_3D_TILES = await Cesium.Cesium3DTileset.fromIonAssetId(2275207);
       viewer.scene.primitives.add(GOOGLE_3D_TILES);
       await GOOGLE_3D_TILES.readyPromise;
       GOOGLE_3D_TILES.maximumScreenSpaceError = desiredMSE;
-    }catch(e){ console.warn('Google 3D Tiles not loaded:', e); }
+    }catch(e){
+      console.warn('Global 3D Tiles not loaded:', e);
+    }
   })();
 
   async function getSurfaceHeight(lon, lat){
     const carto = Cesium.Cartographic.fromDegrees(lon, lat);
-
-    // Prefer Google Photorealistic surface height if available.
     if (GOOGLE_3D_TILES) {
       try {
         await GOOGLE_3D_TILES.readyPromise;
@@ -233,14 +171,6 @@ viewer.imageryLayers.addImageryProvider(
         if (Number.isFinite(h)) return h;
       } catch(e){}
     }
-
-    // Fallback to terrain provider.
-    try {
-      const result = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [carto]);
-      const h = result && result[0] ? result[0].height : NaN;
-      if (Number.isFinite(h)) return h;
-    } catch(e){}
-
     return 0;
   }
 
