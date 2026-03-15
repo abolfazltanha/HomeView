@@ -74,17 +74,37 @@ Promise.all([
     || (window.innerWidth <= 640);
 
   // ========== Cesium Viewer ==========
-  const viewer = new Cesium.Viewer("cesiumContainer", {
-    timeline:false, animation:false, sceneModePicker:false,
-    baseLayerPicker:false, geocoder:false,
-    globe:false, infoBox:false, selectionIndicator:false, shadows:false,
-    shouldAnimate:true,
-    contextOptions: {
-      webgl: { powerPreference: 'low-power', antialias: false, alpha: false, depth: true, stencil: false, preserveDrawingBuffer: false }
-    },
-    useBrowserRecommendedResolution: IS_IOS ? true : false,
-    msaaSamples: IS_IOS ? 2 : 4,
-  });
+const viewer = new Cesium.Viewer("cesiumContainer", {
+  timeline:false,
+  animation:false,
+  sceneModePicker:false,
+  baseLayerPicker:false,
+  geocoder:false,
+  infoBox:false,
+  selectionIndicator:false,
+  shadows:false,
+  shouldAnimate:true,
+
+  terrain: Cesium.Terrain.fromWorldTerrain(),
+
+  contextOptions: {
+    webgl: {
+      powerPreference: 'low-power',
+      antialias: false,
+      alpha: false,
+      depth: true,
+      stencil: false,
+      preserveDrawingBuffer: false
+    }
+  },
+
+  useBrowserRecommendedResolution: IS_IOS ? true : false,
+  msaaSamples: IS_IOS ? 2 : 4,
+});
+
+  viewer.scene.globe.show = true;
+viewer.scene.skyBox.show = true;
+viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
 
   // ---- Require WebGL2 (Cesium shaders use WebGL2 features like 'flat') ----
   try{
