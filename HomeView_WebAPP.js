@@ -78,23 +78,18 @@ Promise.all([
   // 2) We force a visible globe + imagery fallback so the app never shows black/star-only background.
   let viewer;
   try {
-   const viewer = new Cesium.Viewer("cesiumContainer", {
+const viewer = new Cesium.Viewer("cesiumContainer", {
   timeline: false,
   animation: false,
   sceneModePicker: false,
   baseLayerPicker: false,
-  geocoder: false,
+  geocoder: Cesium.IonGeocodeProviderType.GOOGLE,
+  globe: false,
+  skyAtmosphere: new Cesium.SkyAtmosphere(),
   infoBox: false,
   selectionIndicator: false,
   shadows: false,
   shouldAnimate: true,
-
-  terrainProvider: await Cesium.createWorldTerrainAsync(),
-
-  imageryProvider: new Cesium.OpenStreetMapImageryProvider({
-    url: "https://tile.openstreetmap.org/"
-  }),
-
   contextOptions: {
     webgl: {
       powerPreference: 'low-power',
@@ -105,7 +100,6 @@ Promise.all([
       preserveDrawingBuffer: false
     }
   },
-
   useBrowserRecommendedResolution: IS_IOS ? true : false,
   msaaSamples: IS_IOS ? 2 : 4,
 });
@@ -137,8 +131,23 @@ Promise.all([
       useBrowserRecommendedResolution: IS_IOS ? true : false,
       msaaSamples: IS_IOS ? 2 : 4,
     });
+    let GOOGLE_3D_TILES = null;
+let desiredMSE = IS_IOS ? 14 : 12;
+
+(async function () {
+  try {
+    GOOGLE_3D_TILES = await Cesium.Cesium3DTileset.fromIonAssetId(2275207);
+    viewer.scene.primitives.add(GOOGLE_3D_TILES);
+    await GOOGLE_3D_TILES.readyPromise;
+    GOOGLE_3D_TILES.maximumScreenSpaceError = desiredMSE;
+  } catch (e) {
+    console.warn("Global 3D Tiles not loaded:", e);
+  }
+})();
   }
 
+
+  
 viewer.scene.globe.show = true;
 viewer.scene.skyBox.show = false;
 viewer.scene.skyAtmosphere.show = true;
