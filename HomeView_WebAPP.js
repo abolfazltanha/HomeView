@@ -47,7 +47,7 @@ Promise.all([
   new Promise(r=>chartScript.onload=r),
   new Promise(r=>papaScript.onload=r),
   new Promise(r=>leafletScript.onload=r),
-]).then(()=>{
+]).then(async ()=>{
   // ===== Safari-safe WebGL probe =====
   function webglOK(){
     try{
@@ -78,39 +78,37 @@ Promise.all([
   // 2) We force a visible globe + imagery fallback so the app never shows black/star-only background.
   let viewer;
   try {
-    viewer = new Cesium.Viewer("cesiumContainer", {
-      timeline: false,
-      animation: false,
-      sceneModePicker: false,
-      baseLayerPicker: false,
-      geocoder: false,
-      infoBox: false,
-      selectionIndicator: false,
-      shadows: false,
-      shouldAnimate: true,
+   const viewer = new Cesium.Viewer("cesiumContainer", {
+  timeline: false,
+  animation: false,
+  sceneModePicker: false,
+  baseLayerPicker: false,
+  geocoder: false,
+  infoBox: false,
+  selectionIndicator: false,
+  shadows: false,
+  shouldAnimate: true,
 
-      // Always provide visible imagery so the background is never empty.
-      imageryProvider: new Cesium.OpenStreetMapImageryProvider({
-        url: 'https://tile.openstreetmap.org/'
-      }),
+  terrainProvider: await Cesium.createWorldTerrainAsync(),
 
-      // Use terrain when possible; if token/terrain fails, Cesium still renders globe.
-      terrainProvider: Cesium.createWorldTerrain(),
+  imageryProvider: new Cesium.OpenStreetMapImageryProvider({
+    url: "https://tile.openstreetmap.org/"
+  }),
 
-      contextOptions: {
-        webgl: {
-          powerPreference: 'low-power',
-          antialias: false,
-          alpha: false,
-          depth: true,
-          stencil: false,
-          preserveDrawingBuffer: false
-        }
-      },
+  contextOptions: {
+    webgl: {
+      powerPreference: 'low-power',
+      antialias: false,
+      alpha: false,
+      depth: true,
+      stencil: false,
+      preserveDrawingBuffer: false
+    }
+  },
 
-      useBrowserRecommendedResolution: IS_IOS ? true : false,
-      msaaSamples: IS_IOS ? 2 : 4,
-    });
+  useBrowserRecommendedResolution: IS_IOS ? true : false,
+  msaaSamples: IS_IOS ? 2 : 4,
+});
   } catch (e) {
     // Final fallback: no terrain, but still render a normal globe + map.
     viewer = new Cesium.Viewer("cesiumContainer", {
@@ -141,11 +139,20 @@ Promise.all([
     });
   }
 
-  viewer.scene.globe.show = true;
-  viewer.scene.skyBox.show = false;
-  viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#cfe8ff');
+viewer.scene.globe.show = true;
+viewer.scene.skyBox.show = false;
+viewer.scene.skyAtmosphere.show = true;
+viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#bcd9ea');
   viewer.scene.skyAtmosphere.show = true;
   viewer.scene.globe.depthTestAgainstTerrain = true;
+
+  viewer.imageryLayers.removeAll();
+
+viewer.imageryLayers.addImageryProvider(
+  new Cesium.OpenStreetMapImageryProvider({
+    url: "https://tile.openstreetmap.org/"
+  })
+);
 
   // ---- Require WebGL2 (Cesium shaders use WebGL2 features like 'flat') ----
   try{
