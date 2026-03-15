@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.118/Build/Cesium/Cesium.js"></script>
+<style>
+html, body, #cesiumContainer {
+width:100%;
+height:100%;
+margin:0;
+padding:0;
+overflow:hidden;
+}
+</style>
+</head>
+
+<body>
+
+<div id="cesiumContainer"></div>
+
+<script>
+
+Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJlMjUwYWViYi04ZTQ1LTRlNjQtYmM5Ni1jYThjM2Y0M2Y0NzgiLCJpZCI6MTgyMTgyLCJpYXQiOjE3NDA5ODM3MjJ9.B9vJtT0a2CPA7-lmytvjREngu5grb592a1GVORinHFE";
+
+const viewer = new Cesium.Viewer("cesiumContainer", {
+terrainProvider: Cesium.createWorldTerrain()
+});
+
+</script>
+
+</body>
+</html>
