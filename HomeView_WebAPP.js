@@ -66,7 +66,6 @@ Promise.all([
     return;
   }
 
-
   // ========== Environment flags ==========
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
   const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
@@ -74,37 +73,79 @@ Promise.all([
     || (window.innerWidth <= 640);
 
   // ========== Cesium Viewer ==========
-const viewer = new Cesium.Viewer("cesiumContainer", {
-  timeline:false,
-  animation:false,
-  sceneModePicker:false,
-  baseLayerPicker:false,
-  geocoder:false,
-  infoBox:false,
-  selectionIndicator:false,
-  shadows:false,
-  shouldAnimate:true,
+  // IMPORTANT:
+  // 1) Cesium.Ion.defaultAccessToken must be set in index.html BEFORE this file loads.
+  // 2) We force a visible globe + imagery fallback so the app never shows black/star-only background.
+  let viewer;
+  try {
+    viewer = new Cesium.Viewer("cesiumContainer", {
+      timeline: false,
+      animation: false,
+      sceneModePicker: false,
+      baseLayerPicker: false,
+      geocoder: false,
+      infoBox: false,
+      selectionIndicator: false,
+      shadows: false,
+      shouldAnimate: true,
 
-  terrain: Cesium.Terrain.fromWorldTerrain(),
+      // Always provide visible imagery so the background is never empty.
+      imageryProvider: new Cesium.OpenStreetMapImageryProvider({
+        url: 'https://tile.openstreetmap.org/'
+      }),
 
-  contextOptions: {
-    webgl: {
-      powerPreference: 'low-power',
-      antialias: false,
-      alpha: false,
-      depth: true,
-      stencil: false,
-      preserveDrawingBuffer: false
-    }
-  },
+      // Use terrain when possible; if token/terrain fails, Cesium still renders globe.
+      terrainProvider: Cesium.createWorldTerrain(),
 
-  useBrowserRecommendedResolution: IS_IOS ? true : false,
-  msaaSamples: IS_IOS ? 2 : 4,
-});
+      contextOptions: {
+        webgl: {
+          powerPreference: 'low-power',
+          antialias: false,
+          alpha: false,
+          depth: true,
+          stencil: false,
+          preserveDrawingBuffer: false
+        }
+      },
+
+      useBrowserRecommendedResolution: IS_IOS ? true : false,
+      msaaSamples: IS_IOS ? 2 : 4,
+    });
+  } catch (e) {
+    // Final fallback: no terrain, but still render a normal globe + map.
+    viewer = new Cesium.Viewer("cesiumContainer", {
+      timeline: false,
+      animation: false,
+      sceneModePicker: false,
+      baseLayerPicker: false,
+      geocoder: false,
+      infoBox: false,
+      selectionIndicator: false,
+      shadows: false,
+      shouldAnimate: true,
+      imageryProvider: new Cesium.OpenStreetMapImageryProvider({
+        url: 'https://tile.openstreetmap.org/'
+      }),
+      contextOptions: {
+        webgl: {
+          powerPreference: 'low-power',
+          antialias: false,
+          alpha: false,
+          depth: true,
+          stencil: false,
+          preserveDrawingBuffer: false
+        }
+      },
+      useBrowserRecommendedResolution: IS_IOS ? true : false,
+      msaaSamples: IS_IOS ? 2 : 4,
+    });
+  }
 
   viewer.scene.globe.show = true;
-viewer.scene.skyBox.show = true;
-viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
+  viewer.scene.skyBox.show = false;
+  viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#cfe8ff');
+  viewer.scene.skyAtmosphere.show = true;
+  viewer.scene.globe.depthTestAgainstTerrain = true;
 
   // ---- Require WebGL2 (Cesium shaders use WebGL2 features like 'flat') ----
   try{
@@ -124,9 +165,8 @@ viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
       try{ viewer.scene.requestRender(); }catch(e){}
       if(--bootTicks <= 0) clearInterval(bootKick);
     }, 16);
-  }catch(_){}
+  }catch(_){ }
 
-  viewer.scene.skyAtmosphere.show = true;
   try{ const fxaa = viewer.scene.postProcessStages.fxaa; if (fxaa) fxaa.enabled = true; }catch(e){}
 
   // current view mode (needed for FOV slider)
@@ -154,6 +194,9 @@ viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
   // ========== 3D Tiles ==========
   let GOOGLE_3D_TILES=null;
   let desiredMSE = IS_IOS ? 14 : 12;
+
+  // Load Google Photorealistic 3D Tiles only as an enhancement.
+  // If it fails, the globe + imagery + terrain still remain visible.
   (async function(){
     try{
       GOOGLE_3D_TILES = await Cesium.createGooglePhotorealistic3DTileset({ onlyUsingWithGoogleGeocoder: true });
@@ -163,9 +206,30 @@ viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
     }catch(e){ console.warn('Google 3D Tiles not loaded:', e); }
   })();
 
+  async function getSurfaceHeight(lon, lat){
+    const carto = Cesium.Cartographic.fromDegrees(lon, lat);
+
+    // Prefer Google Photorealistic surface height if available.
+    if (GOOGLE_3D_TILES) {
+      try {
+        await GOOGLE_3D_TILES.readyPromise;
+        const h = await Cesium.sampleHeightMostDetailed(GOOGLE_3D_TILES, carto);
+        if (Number.isFinite(h)) return h;
+      } catch(e){}
+    }
+
+    // Fallback to terrain provider.
+    try {
+      const result = await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [carto]);
+      const h = result && result[0] ? result[0].height : NaN;
+      if (Number.isFinite(h)) return h;
+    } catch(e){}
+
+    return 0;
+  }
+
   async function clampDataSourceToSurface(ds){
-    if(!GOOGLE_3D_TILES || !ds) return;
-    try{ await GOOGLE_3D_TILES.readyPromise; }catch(e){ return; }
+    if(!ds) return;
     for (var i=0;i<ds.entities.values.length;i++){
       const ent = ds.entities.values[i];
       const props = ent.properties; if(!props) continue;
@@ -173,13 +237,17 @@ viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
       const plng = props.baseLng && props.baseLng.getValue ? props.baseLng.getValue() : null;
       const groundOffset = props.groundOffset && props.groundOffset.getValue ? Number(props.groundOffset.getValue()) : 0;
       if(plat==null||plng==null) continue;
-      const carto = Cesium.Cartographic.fromDegrees(plng, plat);
       try{
-        const h = await Cesium.sampleHeightMostDetailed(GOOGLE_3D_TILES, carto);
+        const h = await getSurfaceHeight(plng, plat);
         const z = (h||0) + groundOffset;
-        ent.position = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, z);
+        ent.position = Cesium.Cartesian3.fromDegrees(plng, plat, z);
       }catch(e){}
     }
+  }
+
+  async function getBuildingSurfacePosition(lon, lat, heightOffset){
+    const surfaceH = await getSurfaceHeight(lon, lat);
+    return Cesium.Cartesian3.fromDegrees(lon, lat, surfaceH + (heightOffset || 0));
   }
 
   function placeWithEnuOffset(lon,lat,h,offE=0,offN=0,offU=0){
@@ -511,9 +579,19 @@ viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
 
     // entities
     const modelEntities=[];
-    b.forEach((row,i)=>{ const ent=createBuildingModel(row,viewer); ent.show=(i===0); modelEntities.push(ent); });
+    for (let i=0;i<b.length;i++){
+      const row = b[i];
+      const ent = await createBuildingModel(row,viewer);
+      ent.show=(i===0);
+      modelEntities.push(ent);
+    }
 
-    const buildingOrigins = b.map(row=>Cesium.Cartesian3.fromDegrees(toNum(row.lng),toNum(row.lat),toNum(row.height)||20));
+    const buildingOrigins = await Promise.all(
+      b.map(async row => {
+        const lon = toNum(row.lng), lat = toNum(row.lat), h = toNum(row.height)||20;
+        return await getBuildingSurfacePosition(lon, lat, h);
+      })
+    );
 
     // indexers
     const poisByKey = new Map();
@@ -574,11 +652,16 @@ viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
 
     // Interiors
     const interiorEntitiesByBuilding=[]; const interiorMetaByBuilding=[];
-    b.forEach((br,i)=>{
+    for (let i=0;i<b.length;i++){
+      const br = b[i];
       const key=normKey(br.name); const list=interiorsByKey.get(key)||[];
       interiorEntitiesByBuilding[i]=[]; interiorMetaByBuilding[i]=list;
-      list.forEach(u=>{ const e=createInteriorModel(br,u,viewer); e.show=false; interiorEntitiesByBuilding[i].push(e); });
-    });
+      for (const u of list){
+        const e = await createInteriorModel(br,u,viewer);
+        e.show=false;
+        interiorEntitiesByBuilding[i].push(e);
+      }
+    }
 
     // ===== Compare Units =====
     const compareCard=document.createElement('div');
@@ -873,7 +956,7 @@ viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
           const cCarto=Cesium.Cartographic.fromDegrees(lng,lat);
           p.forEach(poi=>{
             const plat=toNum(poi.lat), plng=toNum(poi.lng); if(!Number.isFinite(plat)||!Number.isFinite(plng)) return;
-            let dist=Infinity; try{ dist=new Cesium.EllipsoidGeodesic(cCarto,Cesium.Cartographic.fromDegrees(plng,plat)).surfaceDistance; }catch(_){}
+            let dist=Infinity; try{ dist=new Cesium.EllipsoidGeodesic(cCarto,Cesium.Cartographic.fromDegrees(plng,plat)).surfaceDistance; }catch(_){ }
             if(dist>radius) return;
             const type=(poi.type||'').toLowerCase().trim();
             if(activePoiTypes.size && !activePoiTypes.has(type)) return;
@@ -946,8 +1029,9 @@ viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
         const height=toNum(row.height)||20, scale=toNum(row.scale)||10;
         const heading=Cesium.Math.toRadians(toNum(row.heading)||0), pitch=Cesium.Math.toRadians(-30);
         let distance = (scale>0? scale*25 : (toNum(row.height)||10)*10); if(distance<60) distance=60;
-        const center=Cesium.Cartesian3.fromDegrees(lon,lat,height);
-        viewer.scene.camera.lookAt(center, new Cesium.HeadingPitchRange(heading,pitch,distance));
+        getBuildingSurfacePosition(lon,lat,height).then(center=>{
+          viewer.scene.camera.lookAt(center, new Cesium.HeadingPitchRange(heading,pitch,distance));
+        });
         const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov=Math.PI/3;
 
         title.textContent=row.name||'';
@@ -1000,7 +1084,7 @@ viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#87CEEB');
             descBox.style.display = d ? 'block' : 'none';
             descBox.textContent = d;
           })();
-drawPriceChart(priceCanvas, meta.estimated_price_unit || meta.estimated_price || row.estimated_price);
+          drawPriceChart(priceCanvas, meta.estimated_price_unit || meta.estimated_price || row.estimated_price);
 
           loanCard.style.display='block';
           compareCard.style.display='block';
@@ -1035,9 +1119,9 @@ drawPriceChart(priceCanvas, meta.estimated_price_unit || meta.estimated_price ||
   }).catch(err=>console.error(err));
 
   // ========== Entities ==========
-  function createBuildingModel(row,viewer){
+  async function createBuildingModel(row,viewer){
     const lon=toNum(row.lng), lat=toNum(row.lat), h=toNum(row.height)||20, scale=toNum(row.scale)||10;
-    const pos=Cesium.Cartesian3.fromDegrees(lon,lat,h);
+    const pos = await getBuildingSurfacePosition(lon, lat, h);
     const hpr=new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(toNum(row.heading)||0), Cesium.Math.toRadians(toNum(row.pitch)||0), Cesium.Math.toRadians(toNum(row.roll)||0));
     const ori=Cesium.Transforms.headingPitchRollQuaternion(pos,hpr);
     return viewer.entities.add({
@@ -1048,10 +1132,11 @@ drawPriceChart(priceCanvas, meta.estimated_price_unit || meta.estimated_price ||
     });
   }
 
-  function createInteriorModel(bRow,uRow,viewer){
+  async function createInteriorModel(bRow,uRow,viewer){
     const baseLon=toNum(bRow.lng), baseLat=toNum(bRow.lat), baseH=toNum(bRow.height)||20;
+    const baseSurfaceH = await getSurfaceHeight(baseLon, baseLat);
     const offE=toNum(uRow.offset_east_m)||0, offN=toNum(uRow.offset_north_m)||0, offU=toNum(uRow.offset_up_m)||0;
-    const pos=placeWithEnuOffset(baseLon,baseLat,baseH,offE,offN,offU);
+    const pos=placeWithEnuOffset(baseLon,baseLat,baseSurfaceH + baseH,offE,offN,offU);
     const hd=parseFirstNumber(uRow.heading!=null?uRow.heading:bRow.heading)||0;
     const hpr=new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(hd), Cesium.Math.toRadians(toNum(uRow.pitch)||0), Cesium.Math.toRadians(toNum(uRow.roll)||0));
     const ori=Cesium.Transforms.headingPitchRollQuaternion(pos,hpr);
