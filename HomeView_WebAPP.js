@@ -765,6 +765,7 @@ Promise.all([
       const items=[];
       list.forEach((ur,k)=>{
         if(k===uIdx) return;
+        if(!isUnitRow(ur)) return; // amenities must never appear in Similar Units
         const pr=getCurrentPrice(ur,br); if(!Number.isFinite(pr)) return;
         if(Math.abs(pr-priceBase)>priceTol) return;
         const ar=getAreaM2(ur);
@@ -1058,7 +1059,7 @@ Promise.all([
 
         mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
         updateCommute(idx); commuteCard.style.display='block';
-   } else if (selectedIsAmenity) {
+      } else if (selectedIsAmenity) {
   const k=selectedIndex;
   const ent=(interiorEntitiesByBuilding[idx]||[])[k];
   const meta=selectedMeta||{};
