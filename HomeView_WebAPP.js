@@ -145,6 +145,50 @@ Promise.all([
     const v = parseFloat(String(x).replace(/[$,\u200f,٬\s]/g,''));
     return Number.isFinite(v)? v : NaN;
   }
+  function hasTextValue(v){ return v !== undefined && v !== null && String(v).trim() !== ''; }
+  function firstFilled(){
+    for (let i=0;i<arguments.length;i++){
+      if (hasTextValue(arguments[i])) return String(arguments[i]).trim();
+    }
+    return '';
+  }
+  function getItemDisplayName(item, fallback){
+    return firstFilled(item && item.unit_name, item && item.name, item && item.title, fallback || '');
+  }
+  function getItemDescription(item, fallbackRow){
+    const d = firstFilled(item && item.description, item && item.desc, item && item.about);
+    if (d) return d;
+    return firstFilled(fallbackRow && fallbackRow.description, fallbackRow && fallbackRow.desc, fallbackRow && fallbackRow.about);
+  }
+  function isAmenityRow(item){
+    if(!item) return false;
+    const explicit = firstFilled(item.category, item.type, item.kind, item.item_type).toLowerCase();
+    if (explicit.includes('amenity')) return true;
+    if (explicit === 'unit') return false;
+
+    const hasModel = hasTextValue(item.model_url);
+
+    // Only fields that actually describe a saleable unit should make this a unit.
+    // Shared placement/rendering fields such as lat/lng/offsets/scale/height/model_url
+    // must NOT force the row to be treated as a unit, because amenities also use them.
+    const hasUnitIdentity = [
+      item.list_price, item.price, item.estimated_price_unit, item.estimated_price,
+      item.bedrooms, item.beds, item.bed,
+      item.bathrooms, item.baths, item.bath,
+      item.area_m2, item.area_sqm, item.area_sqft, item.area,
+      item.floor, item.level, item.exposure, item.unit_number
+    ].some(hasTextValue);
+
+    const hasOnlyBasicAmenityContent = [
+      getItemDisplayName(item),
+      getItemDescription(item)
+    ].some(hasTextValue);
+
+    if (!hasModel) return true;
+    if (!hasUnitIdentity && hasOnlyBasicAmenityContent) return true;
+    return false;
+  }
+  function isUnitRow(item){ return !!item && !isAmenityRow(item); }
 
   // ========== 3D Tiles ==========
   let GOOGLE_3D_TILES = null;
@@ -518,7 +562,7 @@ Promise.all([
   Promise.all([fetchCSV(BUILDINGS_URL), fetchCSV(POIS_URL), fetchCSV(INTERIORS_URL)]).then(async ([csvB,csvP,csvI])=>{
     const b = Papa.parse(csvB,{header:true}).data.filter(r=>r.model_url && r.lat && r.lng && (r.estimated_price || r.estimated_price_first));
     const p = Papa.parse(csvP,{header:true}).data.filter(r=>r.name && r.lat && r.lng && r.type);
-    const inter = Papa.parse(csvI,{header:true}).data.filter(r=>r.model_url && (r.unit_name || r.name) && (r.building_key || r.parent || r.name));
+    const inter = Papa.parse(csvI,{header:true}).data.filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
 
     // selectors
     b.forEach((row,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=row.name||('Model #'+(i+1)); selectBox.appendChild(o); });
@@ -596,16 +640,22 @@ Promise.all([
       clampDataSourceToSurface(ds);
     });
 
-    // Interiors
+    // Interiors / Amenities
     const interiorEntitiesByBuilding=[]; const interiorMetaByBuilding=[];
     for (let i=0;i<b.length;i++){
       const br = b[i];
       const key=normKey(br.name); const list=interiorsByKey.get(key)||[];
       interiorEntitiesByBuilding[i]=[]; interiorMetaByBuilding[i]=list;
-      for (const u of list){
-        const e = await createInteriorModel(br,u,viewer);
-        e.show=false;
-        interiorEntitiesByBuilding[i].push(e);
+      for (let k=0;k<list.length;k++){
+        const u = list[k];
+        let e = null;
+        // Amenities may also have their own 3D model and placement data.
+        // Create an entity for any selectable interior item that has a model_url.
+        if (hasTextValue(u.model_url)) {
+          e = await createInteriorModel(br,u,viewer);
+          e.show=false;
+        }
+        interiorEntitiesByBuilding[i][k]=e;
       }
     }
 
@@ -952,7 +1002,13 @@ Promise.all([
       viewSelect.innerHTML='';
       const o=document.createElement('option'); o.value='exterior'; o.textContent='Building View'; viewSelect.appendChild(o);
       const list=interiorMetaByBuilding[idx]||[];
-      list.forEach((u,k)=>{ const o2=document.createElement('option'); o2.value='unit:'+k; o2.textContent=u.unit_name||u.name||('Unit #'+(k+1)); viewSelect.appendChild(o2); });
+      list.forEach((u,k)=>{
+        const o2=document.createElement('option');
+        const amenity = isAmenityRow(u);
+        o2.value=(amenity ? 'amenity:' : 'unit:')+k;
+        o2.textContent=getItemDisplayName(u, (amenity ? 'Amenity #' : 'Unit #')+(k+1));
+        viewSelect.appendChild(o2);
+      });
       viewSelect.value='exterior';
     }
 
@@ -961,11 +1017,20 @@ Promise.all([
     viewSelect.addEventListener('change', ()=>{ updateView(Number(selectBox.value)); });
 
     function updateView(idx){
-      const row=b[idx]; const isExterior=(viewSelect.value==='exterior');
-      currentMode = isExterior ? 'exterior' : 'interior';
+      const row=b[idx];
+      const selectedValue=viewSelect.value||'exterior';
+      const isExterior=(selectedValue==='exterior');
+      const selectedParts=selectedValue.split(':');
+      const selectedKind=selectedParts[0]||'exterior';
+      const selectedIndex=Number(selectedParts[1]||0);
+      const selectedMeta=(interiorMetaByBuilding[idx]||[])[selectedIndex]||null;
+      const selectedIsAmenity = !isExterior && selectedKind==='amenity' && !!selectedMeta;
+      currentMode = isExterior ? 'exterior' : (selectedIsAmenity ? 'amenity' : 'interior');
 
       modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&isExterior);
-      (interiorEntitiesByBuilding[idx]||[]).forEach((ent,k)=>{ ent.show = !isExterior && (viewSelect.value==='unit:'+k); });
+      (interiorEntitiesByBuilding[idx]||[]).forEach((ent,k)=>{
+        if(ent) ent.show = !isExterior && (selectedIndex===k) && (selectedKind==='unit' || selectedKind==='amenity');
+      });
 
       refreshPoisForSelection();
 
@@ -981,15 +1046,9 @@ Promise.all([
         const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov=Math.PI/3;
 
         title.textContent=row.name||'';
-        (function(){
-          var d = '';
-          if (row && typeof row.description !== 'undefined' && row.description!=null) d = String(row.description);
-          else if (row && typeof row.desc !== 'undefined' && row.desc!=null) d = String(row.desc);
-          else if (row && typeof row.about !== 'undefined' && row.about!=null) d = String(row.about);
-          d = d.trim();
-          descBox.style.display = d ? 'block' : 'none';
-          descBox.textContent = d;
-        })();
+        const d = getItemDescription(row).trim();
+        descBox.style.display = d ? 'block' : 'none';
+        descBox.textContent = d;
 
         priceCanvas.style.display='none';
         loanCard.style.display='none';
@@ -999,12 +1058,58 @@ Promise.all([
 
         mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
         updateCommute(idx); commuteCard.style.display='block';
+   } else if (selectedIsAmenity) {
+  const k=selectedIndex;
+  const ent=(interiorEntitiesByBuilding[idx]||[])[k];
+  const meta=selectedMeta||{};
+
+  if(ent){
+    const target=ent.position.getValue(Cesium.JulianDate.now());
+    const camHead=Cesium.Math.toRadians(
+      parseFirstNumber(
+        meta.camera_heading != null
+          ? meta.camera_heading
+          : meta.heading != null
+            ? meta.heading
+            : row.heading
+      ) || 0
+    );
+    const camPitch=Cesium.Math.toRadians(parseFirstNumber(meta.camera_pitch)||-15);
+    const range = parseFirstNumber(meta.camera_distance) || Math.max(25,(parseFirstNumber(meta.scale)||8)*12);
+
+    viewer.scene.camera.lookAt(target, new Cesium.HeadingPitchRange(camHead,camPitch,range));
+    viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+  }
+
+  setInteriorMouseBindings();
+  interiorNav.enable();
+  setJoystickVisible(true);
+
+  const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
+  const fr=viewer.camera.frustum;
+  if(fr && 'fov' in fr) fr.fov = saved * Math.PI/180;
+  fovRange.value = String(saved);
+  fovValEl.textContent = saved;
+
+        title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
+        const d = getItemDescription(selectedMeta, row).trim();
+        descBox.style.display = d ? 'block' : 'none';
+        descBox.textContent = d;
+
+        priceCanvas.style.display='none';
+        loanCard.style.display='none';
+        compareCard.style.display='none';
+        similarCard.style.display='none';
+        priceCard.style.display='none';
+        commuteCard.style.display='none';
+
+        mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
       } else {
-        const k=Number((viewSelect.value.split(':')[1])||0);
+        const k=selectedIndex;
         const ent=(interiorEntitiesByBuilding[idx]||[])[k];
+        const meta=selectedMeta||{};
         if(ent){
           const target=ent.position.getValue(Cesium.JulianDate.now());
-          const meta=(interiorMetaByBuilding[idx]||[])[k]||{};
           const camHead=Cesium.Math.toRadians(parseFirstNumber(meta.camera_heading!=null?meta.camera_heading:row.heading)||0);
           const camPitch=Cesium.Math.toRadians(parseFirstNumber(meta.camera_pitch)||-15);
           const range = parseFirstNumber(meta.camera_distance) || Math.max(30,(parseFirstNumber(meta.scale)||8)*15);
@@ -1013,24 +1118,22 @@ Promise.all([
           viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
           setInteriorMouseBindings(); interiorNav.enable(); setJoystickVisible(true);
 
-          // apply saved FOV (and keep UI text up to date)
           const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
           const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov = saved * Math.PI/180;
           fovRange.value = String(saved); fovValEl.textContent = saved;
 
-          title.textContent=(row.name||'') + ((meta.unit_name||meta.name)?' — '+(meta.unit_name||meta.name):'');
-          priceCanvas.style.display='block';
+          title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
+          const d = getItemDescription(meta, row).trim();
+          descBox.style.display = d ? 'block' : 'none';
+          descBox.textContent = d;
 
-          (function(){
-            var d = '';
-            if (meta && typeof meta.description !== 'undefined' && meta.description!=null) d = String(meta.description);
-            else if (meta && typeof meta.desc !== 'undefined' && meta.desc!=null) d = String(meta.desc);
-            else if (row && typeof row.description !== 'undefined' && row.description!=null) d = String(row.description); // fallback
-            d = d.trim();
-            descBox.style.display = d ? 'block' : 'none';
-            descBox.textContent = d;
-          })();
-          drawPriceChart(priceCanvas, meta.estimated_price_unit || meta.estimated_price || row.estimated_price);
+          const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
+          if (chartSeries) {
+            priceCanvas.style.display='block';
+            drawPriceChart(priceCanvas, chartSeries);
+          } else {
+            priceCanvas.style.display='none';
+          }
 
           loanCard.style.display='block';
           compareCard.style.display='block';
@@ -1046,6 +1149,19 @@ Promise.all([
           buildSimilarList(idx,k);
           renderInsights(idx,k);
           updateCommute(idx);
+        } else {
+          setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
+          title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
+          const d = getItemDescription(meta, row).trim();
+          descBox.style.display = d ? 'block' : 'none';
+          descBox.textContent = d;
+          priceCanvas.style.display='none';
+          loanCard.style.display='none';
+          compareCard.style.display='none';
+          similarCard.style.display='none';
+          priceCard.style.display='none';
+          commuteCard.style.display='none';
+          mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
         }
       }
     }
