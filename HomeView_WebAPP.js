@@ -160,35 +160,57 @@ Promise.all([
     if (d) return d;
     return firstFilled(fallbackRow && fallbackRow.description, fallbackRow && fallbackRow.desc, fallbackRow && fallbackRow.about);
   }
-  function isAmenityRow(item){
-    if(!item) return false;
-    const explicit = firstFilled(item.category, item.type, item.kind, item.item_type).toLowerCase();
-    if (explicit.includes('amenity')) return true;
-    if (explicit === 'unit') return false;
 
-    const hasModel = hasTextValue(item.model_url);
+function normalizeHeaderKey(k){
+  return String(k==null?'':k).trim().toLowerCase()
+    .replace(/[\u200b\u200c\u200d\ufeff]/g,'')
+    .replace(/[^a-z0-9]+/g,'_')
+    .replace(/^_+|_+$/g,'');
+}
+function canonicalizeRow(row){
+  const out = {};
+  if(!row || typeof row !== 'object') return out;
+  Object.keys(row).forEach(function(key){
+    const v = row[key];
+    out[key] = v;
+    const nk = normalizeHeaderKey(key);
+    if(!(nk in out)) out[nk] = v;
+  });
 
-    // Only fields that actually describe a saleable unit should make this a unit.
-    // Shared placement/rendering fields such as lat/lng/offsets/scale/height/model_url
-    // must NOT force the row to be treated as a unit, because amenities also use them.
-    const hasUnitIdentity = [
-      item.list_price, item.price, item.estimated_price_unit, item.estimated_price,
-      item.bedrooms, item.beds, item.bed,
-      item.bathrooms, item.baths, item.bath,
-      item.area_m2, item.area_sqm, item.area_sqft, item.area,
-      item.floor, item.level, item.exposure, item.unit_number
-    ].some(hasTextValue);
+  // Common aliases for unit fields
+  if(!hasTextValue(out.beds) && hasTextValue(out.bedrooms)) out.beds = out.bedrooms;
+  if(!hasTextValue(out.bedrooms) && hasTextValue(out.beds)) out.bedrooms = out.beds;
 
-    const hasOnlyBasicAmenityContent = [
-      getItemDisplayName(item),
-      getItemDescription(item)
-    ].some(hasTextValue);
+  if(!hasTextValue(out.bathrooms) && hasTextValue(out.baths)) out.bathrooms = out.baths;
+  if(!hasTextValue(out.baths) && hasTextValue(out.bathrooms)) out.baths = out.bathrooms;
 
-    if (!hasModel) return true;
-    if (!hasUnitIdentity && hasOnlyBasicAmenityContent) return true;
-    return false;
+  if(!hasTextValue(out.area) && hasTextValue(out.square_footage)) out.area = out.square_footage;
+  if(!hasTextValue(out.square_footage) && hasTextValue(out.area)) out.square_footage = out.area;
+
+  if(!hasTextValue(out.price) && hasTextValue(out.estimated_price)) out.price = out.estimated_price;
+  if(!hasTextValue(out.estimated_price) && hasTextValue(out.price)) out.estimated_price = out.price;
+
+  if(!hasTextValue(out.parking_spaces) && hasTextValue(out.total_parking_spaces)) out.parking_spaces = out.total_parking_spaces;
+  if(!hasTextValue(out.total_parking_spaces) && hasTextValue(out.parking_spaces)) out.total_parking_spaces = out.parking_spaces;
+
+  if(!hasTextValue(out.year_built) && hasTextValue(out.year_built_completion)) out.year_built = out.year_built_completion;
+  if(!hasTextValue(out.year_built) && hasTextValue(out.completion_year)) out.year_built = out.completion_year;
+
+  return out;
+}
+  function getItemType(item){
+    const t = String(
+      (item && (item.item_type || item.type || item.category || item.kind || item.item_kind)) || ''
+    ).trim().toLowerCase();
+
+    if(t === 'amenity') return 'amenity';
+    if(t === 'future') return 'future';
+    if(t === 'unit') return 'unit';
+    return 'unit';
   }
-  function isUnitRow(item){ return !!item && !isAmenityRow(item); }
+  function isAmenityRow(item){ return getItemType(item) === 'amenity'; }
+  function isUnitRow(item){ return getItemType(item) === 'unit'; }
+  function isFutureRow(item){ return getItemType(item) === 'future'; }
 
   // ========== 3D Tiles ==========
   let GOOGLE_3D_TILES = null;
@@ -335,6 +357,109 @@ Promise.all([
   panelBody.appendChild(descBox);
   title.style.cssText="font-weight:700;font-size:17px";
   panelBody.appendChild(title);
+
+const unitSpecsCard = document.createElement('div');
+unitSpecsCard.className = 'ui-card';
+unitSpecsCard.style.cssText = "border-radius:12px;padding:10px;display:none";
+unitSpecsCard.innerHTML = `
+  <div style="font-weight:700;margin-bottom:6px">Unit Details</div>
+  <div id="unitSpecsGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"></div>`;
+panelBody.appendChild(unitSpecsCard);
+const unitSpecsGrid = unitSpecsCard.querySelector('#unitSpecsGrid');
+
+const propertyDetailsCard = document.createElement('div');
+propertyDetailsCard.className = 'ui-card';
+propertyDetailsCard.style.cssText = "border-radius:12px;padding:10px;display:none";
+propertyDetailsCard.innerHTML = `
+  <div style="font-weight:700;margin-bottom:6px">Property Details</div>
+  <div id="propertyDetailsGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px"></div>`;
+panelBody.appendChild(propertyDetailsCard);
+const propertyDetailsGrid = propertyDetailsCard.querySelector('#propertyDetailsGrid');
+
+function makeChipSectionCard(sectionTitle){
+  const card=document.createElement('div');
+  card.className='ui-card';
+  card.style.cssText="border-radius:12px;padding:10px;display:none";
+  card.innerHTML='<div style="font-weight:700;margin-bottom:6px">'+sectionTitle+'</div><div class="chipWrap" style="display:flex;flex-wrap:wrap;gap:6px"></div>';
+  panelBody.appendChild(card);
+  return { card, wrap: card.querySelector('.chipWrap') };
+}
+const buildingFeaturesSec = makeChipSectionCard('Building Features');
+const buildingAmenitiesSec = makeChipSectionCard('Building Amenities');
+const structuresSec = makeChipSectionCard('Structures');
+const heatingSec = makeChipSectionCard('Heating & Cooling');
+const communitySec = makeChipSectionCard('Community Features');
+
+// move description below unit details cards
+panelBody.appendChild(descBox);
+
+const adminUnitEditorCard = document.createElement('div');
+adminUnitEditorCard.className = 'ui-card';
+adminUnitEditorCard.style.cssText = "border-radius:12px;padding:10px;display:none";
+adminUnitEditorCard.innerHTML = `
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+    <div style="font-weight:700">Admin Editor</div>
+    <button id="adminApplyBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Apply locally</button>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Area<input id="adminAreaInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Price<input id="adminPriceInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Beds<input id="adminBedsInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Bathrooms<input id="adminBathsInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Maintenance Fee<input id="adminMaintenanceInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Parking Spaces<input id="adminParkingInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Year Built / Completion<input id="adminYearInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Future Prices<input id="adminForecastInput" class="ui-input" type="text" placeholder="400000,480000,600000" style="padding:8px;border-radius:8px"></label>
+  </div>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Description<textarea id="adminDescInput" class="ui-input" rows="4" style="padding:8px;border-radius:8px"></textarea></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Building Features<input id="adminBuildingFeaturesInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Building Amenities<input id="adminBuildingAmenitiesInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Structures<input id="adminStructuresInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Heating Type<input id="adminHeatingInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Community Features<input id="adminCommunityInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
+  <div id="adminEditorStatus" style="font-size:12px;color:#555;margin-top:8px">Editor is local for now. Saving to sheet comes next.</div>`;
+panelBody.appendChild(adminUnitEditorCard);
+const adminApplyBtn = adminUnitEditorCard.querySelector('#adminApplyBtn');
+const adminAreaInput = adminUnitEditorCard.querySelector('#adminAreaInput');
+const adminPriceInput = adminUnitEditorCard.querySelector('#adminPriceInput');
+const adminBedsInput = adminUnitEditorCard.querySelector('#adminBedsInput');
+const adminBathsInput = adminUnitEditorCard.querySelector('#adminBathsInput');
+const adminMaintenanceInput = adminUnitEditorCard.querySelector('#adminMaintenanceInput');
+const adminParkingInput = adminUnitEditorCard.querySelector('#adminParkingInput');
+const adminYearInput = adminUnitEditorCard.querySelector('#adminYearInput');
+const adminForecastInput = adminUnitEditorCard.querySelector('#adminForecastInput');
+const adminDescInput = adminUnitEditorCard.querySelector('#adminDescInput');
+const adminBuildingFeaturesInput = adminUnitEditorCard.querySelector('#adminBuildingFeaturesInput');
+const adminBuildingAmenitiesInput = adminUnitEditorCard.querySelector('#adminBuildingAmenitiesInput');
+const adminStructuresInput = adminUnitEditorCard.querySelector('#adminStructuresInput');
+const adminHeatingInput = adminUnitEditorCard.querySelector('#adminHeatingInput');
+const adminCommunityInput = adminUnitEditorCard.querySelector('#adminCommunityInput');
+const adminEditorStatus = adminUnitEditorCard.querySelector('#adminEditorStatus');
+
+function renderDetailGrid(target, pairs){
+  target.innerHTML='';
+  pairs.forEach(function(pair){
+    if(!hasTextValue(pair[1])) return;
+    const cell=document.createElement('div');
+    cell.innerHTML='<div style="opacity:.7;font-size:12px">'+pair[0]+'</div><div style="font-weight:600">'+pair[1]+'</div>';
+    target.appendChild(cell);
+  });
+}
+function renderChipSection(section, items){
+  section.wrap.innerHTML='';
+  if(!items || !items.length){
+    section.card.style.display='none';
+    return;
+  }
+  items.forEach(function(txt){
+    const chip=document.createElement('div');
+    chip.className='ui-btn';
+    chip.style.cssText='padding:6px 10px;border-radius:999px;font-size:12px;cursor:default';
+    chip.textContent=txt;
+    section.wrap.appendChild(chip);
+  });
+  section.card.style.display='block';
+}
 
   const labelToolsCard = document.createElement('div');
   labelToolsCard.className = 'ui-card';
@@ -698,9 +823,9 @@ Promise.all([
 
   // ===== Load & Build =====
   Promise.all([fetchCSV(BUILDINGS_URL), fetchCSV(POIS_URL), fetchCSV(INTERIORS_URL)]).then(async ([csvB,csvP,csvI])=>{
-    const b = Papa.parse(csvB,{header:true}).data.filter(r=>r.model_url && r.lat && r.lng && (r.estimated_price || r.estimated_price_first));
-    const p = Papa.parse(csvP,{header:true}).data.filter(r=>r.name && r.lat && r.lng && r.type);
-    const inter = Papa.parse(csvI,{header:true}).data.filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
+    const b = Papa.parse(csvB,{header:true}).data.map(canonicalizeRow).filter(r=>r.model_url && r.lat && r.lng && (r.estimated_price || r.estimated_price_first));
+    const p = Papa.parse(csvP,{header:true}).data.map(canonicalizeRow).filter(r=>r.name && r.lat && r.lng && r.type);
+    const inter = Papa.parse(csvI,{header:true}).data.map(canonicalizeRow).filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
 
     // selectors
     b.forEach((row,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=row.name||('Model #'+(i+1)); selectBox.appendChild(o); });
@@ -821,20 +946,79 @@ Promise.all([
     refreshCompareButtons = function(){ btnOpenCompare.disabled = compareState.length===0; compareHint.style.display = compareState.length===0?'block':'none'; };
 
     function getCurrentPrice(unitRow, buildingRow){
-      const v = (unitRow && (unitRow.list_price||unitRow.price||unitRow.estimated_price_unit||unitRow.estimated_price))
-             || (buildingRow && (buildingRow.estimated_price_first||buildingRow.estimated_price));
+      const v = (unitRow && (unitRow.list_price||unitRow.price||unitRow.estimated_price_unit||unitRow.estimated_price||unitRow.current_price))
+             || (buildingRow && (buildingRow.estimated_price_first||buildingRow.estimated_price||buildingRow.current_price));
       return parseFirstNumber(v);
     }
     function getAreaM2(unitRow){
-      let a = unitRow ? (unitRow.area_m2||unitRow.area_sqm||unitRow.area) : null;
+      let a = unitRow ? (unitRow.area_m2||unitRow.area_sqm||unitRow.area||unitRow.square_footage) : null;
       if(a && String(a).toLowerCase().includes('sqft')){ const n=parseFirstNumber(a); return Number.isFinite(n)? n*0.092903 : NaN; }
       let v = parseFirstNumber(a);
-      if(Number.isFinite(v)) return v;
+      if(Number.isFinite(v)){
+        const s = String(a).toLowerCase();
+        if(s.includes('sqft') || s.includes('ft²') || s.includes('ft2') || s.includes('sq ft')) return v*0.092903;
+        return v;
+      }
       const sqft = unitRow ? (unitRow.area_sqft||unitRow.sqm_ft) : null;
       const s2 = parseFirstNumber(sqft);
       return Number.isFinite(s2) ? s2*0.092903 : NaN;
     }
     function getBeds(unitRow){ const b = parseFirstNumber(unitRow && (unitRow.bedrooms||unitRow.beds||unitRow.bed)); return Number.isFinite(b)? b : null; }
+
+function getBaths(unitRow){
+  const b = parseFirstNumber(unitRow && (unitRow.bathrooms||unitRow.baths||unitRow.bath));
+  return Number.isFinite(b)? b : null;
+}
+function getParkingSpaces(unitRow){
+  const v = parseFirstNumber(unitRow && (
+    unitRow.parking_spaces ||
+    unitRow.parkingspaces ||
+    unitRow.total_parking_spaces ||
+    unitRow.parking
+  ));
+  return Number.isFinite(v)? v : null;
+}
+function getMaintenanceFee(unitRow){
+  const v = parseFirstNumber(unitRow && (
+    unitRow.maintenance_fee ||
+    unitRow.maintenancefees ||
+    unitRow.maintenance_fees ||
+    unitRow.strata_fee
+  ));
+  return Number.isFinite(v)? v : null;
+}
+function getYearBuilt(unitRow){
+  const v = parseFirstNumber(unitRow && (
+    unitRow.year_built ||
+    unitRow.yearbuilt ||
+    unitRow.completion_year ||
+    unitRow.delivery_year
+  ));
+  return Number.isFinite(v)? v : null;
+}
+function splitPipeList(v){
+  return String(v||'').split('|').map(function(s){ return String(s||'').trim(); }).filter(Boolean);
+}
+function firstNonEmptyList(){
+  for(let i=0;i<arguments.length;i++){
+    const arr = splitPipeList(arguments[i]);
+    if(arr.length) return arr;
+  }
+  return [];
+}
+function getFeatureLists(unitRow){
+  return {
+    buildingFeatures: firstNonEmptyList(unitRow && (unitRow.building_features || unitRow.buildingfeatures)),
+    buildingAmenities: firstNonEmptyList(unitRow && (unitRow.building_amenities || unitRow.buildingamenities)),
+    structures: firstNonEmptyList(unitRow && unitRow.structures),
+    heating: firstNonEmptyList(unitRow && (unitRow.heating_type || unitRow.heatingtype)),
+    community: firstNonEmptyList(unitRow && (unitRow.community_features || unitRow.communityfeatures))
+  };
+}
+function fmtMoneyNoDash(n){
+  const v=parseFirstNumber(n);
+  return Number.isFinite(v) ? ('$'+v.toLocaleString()) : '';
+}
 
     btnAddCurrent.onclick=()=>{
       if(!viewSelect.value.startsWith('unit:')) return;
@@ -863,19 +1047,23 @@ Promise.all([
         const price=getCurrentPrice(ur,br);
         const area=getAreaM2(ur);
         const beds=getBeds(ur);
+        const baths=getBaths(ur);
+        const parking=getParkingSpaces(ur);
+        const fee=getMaintenanceFee(ur);
+        const year=getYearBuilt(ur);
         const monthly = Number.isFinite(price) ? -pmt((loan.rate||0)/12, (loan.termY||20)*12, price*(1-(loan.dpct||20)/100)) : NaN;
         const name=ur.unit_name||ur.name||('Unit '+(uIdx+1));
-        return {name,price,area,beds,monthly};
+        return {name,price,area,beds,baths,parking,fee,year,monthly};
       });
-      const head='<tr style="font-weight:700"><td></td><td>Price</td><td>Area (m²)</td><td>Beds</td><td>Monthly</td></tr>';
-      const trs=rows.map(r=>`<tr><td style="font-weight:600">${r.name}</td><td>${fmtUSD(r.price)}</td><td>${Number.isFinite(r.area)?r.area.toFixed(1):'—'}</td><td>${r.beds!=null?r.beds:'—'}</td><td>${fmtUSD(r.monthly)}</td></tr>`).join('');
+      const head='<tr style="font-weight:700"><td></td><td>Price</td><td>Area</td><td>Beds</td><td>Baths</td><td>Parking</td><td>Fee</td><td>Year</td><td>Monthly</td></tr>';
+      const trs=rows.map(r=>`<tr><td style="font-weight:600">${r.name}</td><td>${fmtUSD(r.price)}</td><td>${Number.isFinite(r.area)?r.area.toFixed(1)+' m²':'—'}</td><td>${r.beds!=null?r.beds:'—'}</td><td>${r.baths!=null?r.baths:'—'}</td><td>${r.parking!=null?r.parking:'—'}</td><td>${fmtMoneyNoDash(r.fee)||'—'}</td><td>${r.year!=null?r.year:'—'}</td><td>${fmtUSD(r.monthly)}</td></tr>`).join('');
       box.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <div style="font-weight:700">Compare Units</div>
           <button id="closeModal" class="ui-btn" style="border-radius:10px;padding:6px 10px;cursor:pointer">✕</button>
         </div>
         <div style="overflow:auto;max-height:70vh">
-          <table style="width:100%;border-collapse:collapse">${head}${trs || `<tr><td colspan="5" style="opacity:.7">No units added yet</td></tr>`}</table>
+          <table style="width:100%;border-collapse:collapse">${head}${trs || `<tr><td colspan="9" style="opacity:.7">No units added yet</td></tr>`}</table>
         </div>`;
       box.querySelector('#closeModal').onclick=()=>modal.style.display='none';
       modal.style.display='flex';
@@ -899,16 +1087,23 @@ Promise.all([
 
       const priceTol=0.15*priceBase;
       const areaTol = Number.isFinite(areaBase)? Math.max(5,0.15*areaBase) : Infinity;
+      const bathsBase=getBaths(base);
+      const parkingBase=getParkingSpaces(base);
+      const yearBase=getYearBuilt(base);
 
       const items=[];
       list.forEach((ur,k)=>{
         if(k===uIdx) return;
-        if(!isUnitRow(ur)) return;
+        if(getItemType(ur) !== 'unit') return;
         const pr=getCurrentPrice(ur,br); if(!Number.isFinite(pr)) return;
         if(Math.abs(pr-priceBase)>priceTol) return;
         const ar=getAreaM2(ur);
+        const ba=getBaths(ur);
+        const pk=getParkingSpaces(ur);
+        const yr=getYearBuilt(ur);
         if(Number.isFinite(areaBase) && Number.isFinite(ar) && Math.abs(ar-areaBase)>areaTol) return;
-        items.push({ur,k,pr,ar});
+        if(bathsBase!=null && ba!=null && Math.abs(ba-bathsBase)>1) return;
+        items.push({ur,k,pr,ar,ba,pk,yr});
       });
 
       items.sort((a,c)=>Math.abs(a.pr-priceBase)-Math.abs(c.pr-priceBase));
@@ -920,7 +1115,7 @@ Promise.all([
         btn.className='ui-btn';
         btn.style.cssText="text-align:left;border-radius:10px;padding:8px;cursor:pointer";
         const nm=it.ur.unit_name||it.ur.name||('Unit '+(it.k+1));
-        btn.innerHTML=`<div style="font-weight:600">${nm}</div><div style="font-size:12px;opacity:.8">${fmtUSD(it.pr)} ${Number.isFinite(it.ar)?'• '+it.ar.toFixed(0)+' m²':''}</div>`;
+        btn.innerHTML=`<div style="font-weight:600">${nm}</div><div style="font-size:12px;opacity:.8">${fmtUSD(it.pr)} ${Number.isFinite(it.ar)?'• '+it.ar.toFixed(0)+' m²':''} ${it.ba!=null?'• '+it.ba+' bath':''} ${it.pk!=null?'• '+it.pk+' parking':''} ${it.yr!=null?'• '+it.yr:''}</div>`;
         btn.onclick=()=>{ viewSelect.value='unit:'+it.k; viewSelect.dispatchEvent(new Event('change')); };
         similarBody.appendChild(btn);
       });
@@ -1283,6 +1478,7 @@ Promise.all([
       const admin = isEditorAdmin();
 
       labelToolsCard.style.display = usable ? 'block' : 'none';
+      adminUnitEditorCard.style.display = (usable && admin) ? 'block' : 'none';
       if(!usable){
         labelEditorState.editMode = false;
         labelEditorState.pendingPick = false;
@@ -1292,7 +1488,6 @@ Promise.all([
         return;
       }
 
-      // Everyone can choose whether to view labels, but only admins can edit them.
       editLabelsBtn.style.display = admin ? 'inline-flex' : 'none';
 
       if(!admin){
@@ -1308,7 +1503,7 @@ Promise.all([
       labelEditorBody.style.display = labelEditorState.editMode ? 'flex' : 'none';
       refreshLabelListUI();
     }
-    showLabelsToggle.checked = true;
+    showLabelsToggle.checked = false;
     showLabelsToggle.addEventListener('change', function(){ renderSelectionLabels(); });
     editLabelsBtn.onclick = function(){
       if(!isEditorAdmin()){
@@ -1382,6 +1577,47 @@ Promise.all([
       refreshLabelListUI();
       return true;
     }
+
+function populateAdminEditor(meta, row){
+  if(!meta) return;
+  adminAreaInput.value = firstFilled(meta.square_footage, meta.area, meta.area_m2, meta.area_sqm, meta.area_sqft);
+  adminPriceInput.value = firstFilled(meta.list_price, meta.price, meta.estimated_price_unit, meta.estimated_price);
+  adminBedsInput.value = firstFilled(meta.bedrooms, meta.beds, meta.bed);
+  adminBathsInput.value = firstFilled(meta.bathrooms, meta.baths, meta.bath);
+  adminMaintenanceInput.value = firstFilled(meta.maintenance_fee, meta.maintenance_fees, meta.strata_fee);
+  adminParkingInput.value = firstFilled(meta.parking_spaces, meta.total_parking_spaces, meta.parking);
+  adminYearInput.value = firstFilled(meta.year_built, meta.completion_year, meta.delivery_year);
+  adminForecastInput.value = firstFilled(meta.estimated_price, meta.rate_scenarios, row && row.estimated_price);
+  adminDescInput.value = getItemDescription(meta, row);
+  adminBuildingFeaturesInput.value = firstFilled(meta.building_features);
+  adminBuildingAmenitiesInput.value = firstFilled(meta.building_amenities);
+  adminStructuresInput.value = firstFilled(meta.structures);
+  adminHeatingInput.value = firstFilled(meta.heating_type);
+  adminCommunityInput.value = firstFilled(meta.community_features);
+}
+
+adminApplyBtn.onclick = function(){
+  const sel = labelEditorState.currentSelection;
+  if(!sel || sel.isExterior || !sel.meta) return;
+  const meta = sel.meta;
+  meta.area = adminAreaInput.value.trim();
+  meta.price = adminPriceInput.value.trim();
+  meta.beds = adminBedsInput.value.trim();
+  meta.bathrooms = adminBathsInput.value.trim();
+  meta.maintenance_fee = adminMaintenanceInput.value.trim();
+  meta.parking_spaces = adminParkingInput.value.trim();
+  meta.year_built = adminYearInput.value.trim();
+  meta.estimated_price = adminForecastInput.value.trim();
+  meta.description = adminDescInput.value;
+  meta.building_features = adminBuildingFeaturesInput.value.trim();
+  meta.building_amenities = adminBuildingAmenitiesInput.value.trim();
+  meta.structures = adminStructuresInput.value.trim();
+  meta.heating_type = adminHeatingInput.value.trim();
+  meta.community_features = adminCommunityInput.value.trim();
+  adminEditorStatus.textContent = 'Changes applied locally for current item. Save-to-sheet comes next.';
+  updateView(Number(selectBox.value));
+};
+
     // ===== Picking (POI tooltip) =====
     const handler=new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
     handler.setInputAction(function (m){
@@ -1424,6 +1660,50 @@ Promise.all([
     selectBox.addEventListener('change', ()=>{ rebuildViewOptions(Number(selectBox.value)); updateView(Number(selectBox.value)); });
     viewSelect.addEventListener('change', ()=>{ updateView(Number(selectBox.value)); });
 
+
+function renderUnitMetaUI(meta, row){
+  const source = meta || row || {};
+  const price = getCurrentPrice(source, row);
+  const area = getAreaM2(source);
+  const beds = getBeds(source);
+  const baths = getBaths(source);
+  const parking = getParkingSpaces(source);
+  const fee = getMaintenanceFee(source);
+  const year = getYearBuilt(source);
+  const lists = getFeatureLists(source);
+
+  renderDetailGrid(unitSpecsGrid, [
+    ['Price', fmtMoneyNoDash(price)],
+    ['Area', Number.isFinite(area) ? area.toFixed(1) + ' m²' : firstFilled(source.square_footage, source.area, source.area_sqft)],
+    ['Beds', beds!=null ? String(beds) : ''],
+    ['Bathrooms', baths!=null ? String(baths) : '']
+  ]);
+  unitSpecsCard.style.display = unitSpecsGrid.children.length ? 'block' : 'none';
+
+  renderDetailGrid(propertyDetailsGrid, [
+    ['Maintenance Fee', fmtMoneyNoDash(fee)],
+    ['Parking Spaces', parking!=null ? String(parking) : ''],
+    ['Year Built / Completion', year!=null ? String(year) : '']
+  ]);
+  propertyDetailsCard.style.display = propertyDetailsGrid.children.length ? 'block' : 'none';
+
+  renderChipSection(buildingFeaturesSec, lists.buildingFeatures);
+  renderChipSection(buildingAmenitiesSec, lists.buildingAmenities);
+  renderChipSection(structuresSec, lists.structures);
+  renderChipSection(heatingSec, lists.heating);
+  renderChipSection(communitySec, lists.community);
+}
+function hideUnitMetaUI(){
+  unitSpecsCard.style.display='none';
+  propertyDetailsCard.style.display='none';
+  buildingFeaturesSec.card.style.display='none';
+  buildingAmenitiesSec.card.style.display='none';
+  structuresSec.card.style.display='none';
+  heatingSec.card.style.display='none';
+  communitySec.card.style.display='none';
+  adminUnitEditorCard.style.display='none';
+}
+
     function updateView(idx){
       const row=b[idx];
       const selectedValue=viewSelect.value||'exterior';
@@ -1432,8 +1712,10 @@ Promise.all([
       const selectedKind=selectedParts[0]||'exterior';
       const selectedIndex=Number(selectedParts[1]||0);
       const selectedMeta=(interiorMetaByBuilding[idx]||[])[selectedIndex]||null;
-      const selectedIsAmenity = !isExterior && selectedKind==='amenity' && !!selectedMeta;
-      currentMode = isExterior ? 'exterior' : (selectedIsAmenity ? 'amenity' : 'interior');
+      const selectedType = !isExterior && selectedMeta ? getItemType(selectedMeta) : 'unit';
+      const selectedIsAmenity = !isExterior && selectedType==='amenity' && !!selectedMeta;
+      const selectedIsFuture = !isExterior && selectedType==='future' && !!selectedMeta;
+      currentMode = isExterior ? 'exterior' : ((selectedIsAmenity || selectedIsFuture) ? 'amenity' : 'interior');
       labelEditorState.currentSelection = { bIdx: idx, kind: selectedKind, itemIdx: selectedIndex, meta: selectedMeta, row: row, isExterior: isExterior };
 
       modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&isExterior);
@@ -1455,6 +1737,7 @@ Promise.all([
         const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov=Math.PI/3;
 
         title.textContent=row.name||'';
+        hideUnitMetaUI();
         const d = getItemDescription(row).trim();
         descBox.style.display = d ? 'block' : 'none';
         descBox.textContent = d;
@@ -1502,6 +1785,8 @@ Promise.all([
         fovValEl.textContent = saved;
 
         title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
+        hideUnitMetaUI();
+        if(isEditorAdmin()) populateAdminEditor(selectedMeta, row);
         const d = getItemDescription(selectedMeta, row).trim();
         descBox.style.display = d ? 'block' : 'none';
         descBox.textContent = d;
@@ -1512,6 +1797,7 @@ Promise.all([
         similarCard.style.display='none';
         priceCard.style.display='none';
         commuteCard.style.display='none';
+        if (typeof compareModal !== 'undefined' && compareModal) compareModal.style.display='none';
 
         mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
       } else {
@@ -1533,6 +1819,8 @@ Promise.all([
           fovRange.value = String(saved); fovValEl.textContent = saved;
 
           title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
+          renderUnitMetaUI(meta, row);
+          if(isEditorAdmin()) populateAdminEditor(meta, row);
           const d = getItemDescription(meta, row).trim();
           descBox.style.display = d ? 'block' : 'none';
           descBox.textContent = d;
@@ -1562,6 +1850,8 @@ Promise.all([
         } else {
           setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
           title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
+          renderUnitMetaUI(meta, row);
+          if(isEditorAdmin()) populateAdminEditor(meta, row);
           const d = getItemDescription(meta, row).trim();
           descBox.style.display = d ? 'block' : 'none';
           descBox.textContent = d;
