@@ -336,6 +336,62 @@ Promise.all([
   title.style.cssText="font-weight:700;font-size:17px";
   panelBody.appendChild(title);
 
+  const labelToolsCard = document.createElement('div');
+  labelToolsCard.className = 'ui-card';
+  labelToolsCard.style.cssText = "border-radius:12px;padding:10px;display:none";
+  labelToolsCard.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <div style="font-weight:700">3D Labels</div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+          <input id="showLabelsToggle" type="checkbox">
+          <span>Show labels</span>
+        </label>
+        <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
+      </div>
+    </div>
+    <div id="labelEditorBody" style="display:none;flex-direction:column;gap:8px;margin-top:10px">
+      <div style="font-size:12px;line-height:1.5;color:#444">Click <b>Pick label position</b>, then click anywhere on the current 3D model to place a text label. Copy the exported string and save it into the sheet column <b>label_annotations</b>.</div>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Label text
+        <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px">
+      </label>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Raise (m)<input id="labelRaiseInput" class="ui-input" type="number" value="0" step="0.1" style="padding:8px;border-radius:8px"></label>
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Scale<input id="labelScaleInput" class="ui-input" type="number" value="1" step="0.1" style="padding:8px;border-radius:8px"></label>
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Color<input id="labelColorInput" class="ui-input" type="color" value="#00ff88" style="padding:4px;border-radius:8px;height:38px"></label>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
+        <button id="newLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">New label</button>
+        <button id="deleteLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer;border-color:#ffcdd2;color:#b71c1c">Delete selected</button>
+        <button id="copyLabelsBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Copy export string</button>
+      </div>
+      <div id="labelEditorStatus" style="font-size:12px;color:#555">No label selected</div>
+      <div id="labelList" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto"></div>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Export string
+        <textarea id="labelsExportBox" class="ui-input" rows="5" style="padding:8px;border-radius:8px;resize:vertical"></textarea>
+      </label>
+    </div>`;
+  panelBody.appendChild(labelToolsCard);
+  const showLabelsToggle = labelToolsCard.querySelector('#showLabelsToggle');
+  const editLabelsBtn = labelToolsCard.querySelector('#editLabelsBtn');
+  const labelEditorBody = labelToolsCard.querySelector('#labelEditorBody');
+  const labelTextInput = labelToolsCard.querySelector('#labelTextInput');
+  const labelRaiseInput = labelToolsCard.querySelector('#labelRaiseInput');
+  const labelScaleInput = labelToolsCard.querySelector('#labelScaleInput');
+  const labelColorInput = labelToolsCard.querySelector('#labelColorInput');
+  const pickLabelBtn = labelToolsCard.querySelector('#pickLabelBtn');
+  const newLabelBtn = labelToolsCard.querySelector('#newLabelBtn');
+  const deleteLabelBtn = labelToolsCard.querySelector('#deleteLabelBtn');
+  const copyLabelsBtn = labelToolsCard.querySelector('#copyLabelsBtn');
+  const labelEditorStatus = labelToolsCard.querySelector('#labelEditorStatus');
+  const labelList = labelToolsCard.querySelector('#labelList');
+  const labelsExportBox = labelToolsCard.querySelector('#labelsExportBox');
+
+  // Hide label editing tools by default; only admins can unlock them.
+  editLabelsBtn.style.display = 'none';
+  labelEditorBody.style.display = 'none';
+
   const priceCanvas = document.createElement('canvas');
   priceCanvas.width = 310; priceCanvas.height=140;
   panelBody.appendChild(priceCanvas);
@@ -496,6 +552,20 @@ Promise.all([
   }
   setJoystickVisible(false);
 
+  // ===== Admin auth (editor-only) =====
+  const ADMIN_USERNAME = 'admin';
+  const ADMIN_PASSWORD = 'HomeView2026!';
+  const EDITOR_AUTH_STORAGE_KEY = 'homeview.editorAuth';
+  function isEditorAdmin(){
+    try{ return sessionStorage.getItem(EDITOR_AUTH_STORAGE_KEY) === '1'; }catch(_){ return false; }
+  }
+  function setEditorAdmin(v){
+    try{
+      if(v) sessionStorage.setItem(EDITOR_AUTH_STORAGE_KEY,'1');
+      else sessionStorage.removeItem(EDITOR_AUTH_STORAGE_KEY);
+    }catch(_){ }
+  }
+
   // ===== Graphics quick menu (⚙️) =====
   const gfxBtn = document.createElement('button');
   gfxBtn.setAttribute('aria-label','Graphics');
@@ -520,6 +590,29 @@ Promise.all([
   fovWrap.style.cssText = "margin-top:10px;";
   fovWrap.innerHTML = `<label style="display:block; font-size:13px; margin:6px 0 6px;">FOV (Interior): <span id="fovVal"></span>°</label><input id="fovRange" class="ui-input" type="range" min="50" max="100" step="1" style="width:100%;">`;
   gfxCard.appendChild(fovWrap);
+  const editorAuthWrap = document.createElement('div');
+  editorAuthWrap.style.cssText = "margin-top:12px;padding-top:12px;border-top:1px solid rgba(0,0,0,.08);display:flex;flex-direction:column;gap:8px";
+  editorAuthWrap.innerHTML = `
+    <div style="font-weight:700;font-size:13px;">Editor access</div>
+    <button id="openEditorAuthBtn" class="ui-btn" style="width:100%;">Enter editor</button>
+    <div id="editorAuthPanel" style="display:none;flex-direction:column;gap:8px;">
+      <input id="editorUsernameInput" class="ui-input" type="text" placeholder="Username" style="width:100%;padding:8px;border-radius:8px;">
+      <input id="editorPasswordInput" class="ui-input" type="password" placeholder="Password" style="width:100%;padding:8px;border-radius:8px;">
+      <div style="display:flex;gap:8px;">
+        <button id="editorLoginBtn" class="ui-btn" style="flex:1;">Login</button>
+        <button id="editorLogoutBtn" class="ui-btn" style="display:none;">Logout</button>
+      </div>
+      <div id="editorAuthStatus" style="font-size:12px;color:#555;">Editor mode is locked.</div>
+    </div>`;
+  gfxCard.appendChild(editorAuthWrap);
+  const openEditorAuthBtn = editorAuthWrap.querySelector('#openEditorAuthBtn');
+  const editorAuthPanel = editorAuthWrap.querySelector('#editorAuthPanel');
+  const editorUsernameInput = editorAuthWrap.querySelector('#editorUsernameInput');
+  const editorPasswordInput = editorAuthWrap.querySelector('#editorPasswordInput');
+  const editorLoginBtn = editorAuthWrap.querySelector('#editorLoginBtn');
+  const editorLogoutBtn = editorAuthWrap.querySelector('#editorLogoutBtn');
+  const editorAuthStatus = editorAuthWrap.querySelector('#editorAuthStatus');
+
   const fovValEl = fovWrap.querySelector('#fovVal');
   const fovRange = fovWrap.querySelector('#fovRange');
   const savedFov = Number(localStorage.getItem('ui.fovInterior') || 80);
@@ -537,6 +630,51 @@ Promise.all([
   fovRange.addEventListener('input', ()=> setInteriorFovDeg(fovRange.value, false));
   fovRange.addEventListener('change', ()=> setInteriorFovDeg(fovRange.value, true));
   gfxBtn.addEventListener('click', ()=>{ gfxCard.style.display = (gfxCard.style.display === 'none' || !gfxCard.style.display) ? 'block' : 'none'; });
+
+  function updateEditorAuthUI(){
+    const unlocked = isEditorAdmin();
+    openEditorAuthBtn.textContent = unlocked ? 'Editor unlocked' : 'Enter editor';
+    editorAuthStatus.textContent = unlocked ? 'Editor mode is unlocked on this device session.' : 'Editor mode is locked.';
+    editorLogoutBtn.style.display = unlocked ? 'inline-flex' : 'none';
+    if(!unlocked){
+      editorPasswordInput.value = '';
+    }
+    try{
+      if(typeof syncLabelToolsVisibility === 'function') syncLabelToolsVisibility();
+      if(typeof refreshLabelListUI === 'function') refreshLabelListUI();
+      if(typeof renderActiveLabels === 'function') renderActiveLabels();
+    }catch(_){}
+  }
+  openEditorAuthBtn.addEventListener('click', ()=>{
+    editorAuthPanel.style.display = (editorAuthPanel.style.display === 'none' || !editorAuthPanel.style.display) ? 'flex' : 'none';
+    if(editorAuthPanel.style.display === 'flex' && !isEditorAdmin()){
+      setTimeout(()=>{ try{ editorUsernameInput.focus(); }catch(_){ } }, 0);
+    }
+  });
+  editorLoginBtn.addEventListener('click', ()=>{
+    const u = String(editorUsernameInput.value || '').trim();
+    const p = String(editorPasswordInput.value || '');
+    if(u === ADMIN_USERNAME && p === ADMIN_PASSWORD){
+      setEditorAdmin(true);
+      editorPasswordInput.value = '';
+      editorAuthStatus.textContent = 'Login successful. Editor mode is now unlocked.';
+      updateEditorAuthUI();
+      try{
+        if(typeof syncLabelToolsVisibility === 'function') syncLabelToolsVisibility();
+        if(typeof refreshLabelListUI === 'function') refreshLabelListUI();
+      }catch(_){}
+    }else{
+      editorAuthStatus.textContent = 'Incorrect username or password.';
+    }
+  });
+  editorLogoutBtn.addEventListener('click', ()=>{
+    setEditorAdmin(false);
+    editorPasswordInput.value = '';
+    editorAuthStatus.textContent = 'You have been logged out from editor mode.';
+    updateEditorAuthUI();
+  });
+  updateEditorAuthUI();
+
 
   function applyGfxPreset(preset){
     try { viewer.useBrowserRecommendedResolution = false; } catch(e){}
@@ -765,7 +903,7 @@ Promise.all([
       const items=[];
       list.forEach((ur,k)=>{
         if(k===uIdx) return;
-        if(!isUnitRow(ur)) return; // amenities must never appear in Similar Units
+        if(!isUnitRow(ur)) return;
         const pr=getCurrentPrice(ur,br); if(!Number.isFinite(pr)) return;
         if(Math.abs(pr-priceBase)>priceTol) return;
         const ar=getAreaM2(ur);
@@ -979,9 +1117,278 @@ Promise.all([
       });
     }
 
+
+    // ===== 3D Label Overlay / Editor =====
+    const labelEditorState = {
+      enabled: false,
+      editMode: false,
+      pendingPick: false,
+      selectedLabelIndex: -1,
+      currentSelection: null,
+      cache: new Map(),
+      entities: []
+    };
+
+    function getSelectionKey(sel){
+      if(!sel || sel.isExterior) return '';
+      return [sel.bIdx, sel.kind, sel.itemIdx].join(':');
+    }
+    function parseLabelAnnotations(str){
+      if(!str || !String(str).trim()) return [];
+      return String(str).split(';').map(function(part){
+        const p = part.trim(); if(!p) return null;
+        const bits = p.split('|');
+        const text = (bits[0]||'').trim();
+        const posBits = (bits[1]||'0,0,0').split(',').map(v=>Number(String(v).trim()));
+        const x = Number.isFinite(posBits[0]) ? posBits[0] : 0;
+        const y = Number.isFinite(posBits[1]) ? posBits[1] : 0;
+        const z = Number.isFinite(posBits[2]) ? posBits[2] : 0;
+        const scale = Number(bits[2]);
+        const color = (bits[3]||'#00ff88').trim() || '#00ff88';
+        return { text:text||'Label', x, y, z, scale:Number.isFinite(scale)&&scale>0?scale:1, color };
+      }).filter(Boolean);
+    }
+    function formatLabelAnnotations(items){
+      return (items||[]).map(function(it){
+        const x = Number(it.x||0).toFixed(2).replace(/\.00$/,'');
+        const y = Number(it.y||0).toFixed(2).replace(/\.00$/,'');
+        const z = Number(it.z||0).toFixed(2).replace(/\.00$/,'');
+        const sc = Number(it.scale||1).toFixed(2).replace(/\.00$/,'');
+        return [String(it.text||'Label').replace(/[;|]/g,' ').trim(), [x,y,z].join(','), sc, it.color||'#00ff88'].join('|');
+      }).join('; ');
+    }
+    function getCurrentSelectionLabels(){
+      const key = getSelectionKey(labelEditorState.currentSelection);
+      if(!key) return [];
+      if(!labelEditorState.cache.has(key)){
+        const meta = labelEditorState.currentSelection.meta || {};
+        const raw = firstFilled(meta.label_annotations, meta.labels_3d, meta.text_annotations, meta.annotation_labels);
+        labelEditorState.cache.set(key, parseLabelAnnotations(raw));
+      }
+      return labelEditorState.cache.get(key);
+    }
+    function setCurrentSelectionLabels(items){
+      const key = getSelectionKey(labelEditorState.currentSelection);
+      if(!key) return;
+      const clean = (items||[]).map(it=>({ text:String(it.text||'Label'), x:Number(it.x)||0, y:Number(it.y)||0, z:Number(it.z)||0, scale:(Number(it.scale)>0?Number(it.scale):1), color:it.color||'#00ff88' }));
+      labelEditorState.cache.set(key, clean);
+      if(labelEditorState.currentSelection && labelEditorState.currentSelection.meta){
+        labelEditorState.currentSelection.meta.label_annotations = formatLabelAnnotations(clean);
+      }
+      labelsExportBox.value = formatLabelAnnotations(clean);
+    }
+    function clearRenderedLabels(){
+      while(labelEditorState.entities.length){
+        const e = labelEditorState.entities.pop();
+        try{ viewer.entities.remove(e); }catch(_){ }
+      }
+    }
+    function getLabelMaxViewDistanceM(sel){
+      const meta = (sel && sel.meta) ? sel.meta : {};
+      const v = firstFilled(
+        meta.label_max_view_distance_m,
+        meta.label_view_distance_m,
+        meta.labels_max_view_distance_m,
+        meta.labels_view_distance_m,
+        meta.max_label_distance_m,
+        meta.view_distance_m
+      );
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? n : 8;
+    }
+    function getSelectionAnchor(sel){
+      if(!sel || sel.isExterior) return null;
+      const ent = (interiorEntitiesByBuilding[sel.bIdx]||[])[sel.itemIdx] || null;
+      let pos = null, q = null;
+      const now = Cesium.JulianDate.now();
+      if(ent && ent.position){
+        try{ pos = ent.position.getValue(now); }catch(_){ }
+        try{ q = ent.orientation && ent.orientation.getValue ? ent.orientation.getValue(now) : null; }catch(_){ }
+      }
+      if(!pos){
+        const br = b[sel.bIdx] || {};
+        const m = sel.meta || {};
+        const baseLon=toNum(br.lng), baseLat=toNum(br.lat), baseH=toNum(br.height)||20;
+        const surfaceH = 0;
+        pos = placeWithEnuOffset(baseLon,baseLat,surfaceH + baseH,toNum(m.offset_east_m)||0,toNum(m.offset_north_m)||0,toNum(m.offset_up_m)||0);
+      }
+      if(!q){
+        const br = b[sel.bIdx] || {};
+        const m = sel.meta || {};
+        const hd=parseFirstNumber(m.heading!=null?m.heading:br.heading)||0;
+        const hpr=new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(hd), Cesium.Math.toRadians(toNum(m.pitch)||0), Cesium.Math.toRadians(toNum(m.roll)||0));
+        q = Cesium.Transforms.headingPitchRollQuaternion(pos,hpr);
+      }
+      const rot = Cesium.Matrix3.fromQuaternion(q, new Cesium.Matrix3());
+      const matrix = Cesium.Matrix4.fromRotationTranslation(rot, pos, new Cesium.Matrix4());
+      const inv = Cesium.Matrix4.inverseTransformation(matrix, new Cesium.Matrix4());
+      return { pos, q, matrix, inv };
+    }
+    function renderSelectionLabels(){
+      clearRenderedLabels();
+      const sel = labelEditorState.currentSelection;
+      if(!sel || sel.isExterior || !showLabelsToggle.checked) return;
+      const anchor = getSelectionAnchor(sel); if(!anchor) return;
+      const items = getCurrentSelectionLabels();
+      items.forEach(function(it){
+        const local = new Cesium.Cartesian3(Number(it.x)||0, Number(it.y)||0, Number(it.z)||0);
+        const world = Cesium.Matrix4.multiplyByPoint(anchor.matrix, local, new Cesium.Cartesian3());
+        const col = Cesium.Color.fromCssColorString(it.color||'#00ff88');
+        const e = viewer.entities.add({
+          position: world,
+          label: {
+            text: String(it.text||'Label'),
+            font: Math.max(14, Math.round((Number(it.scale)||1)*18)) + 'px sans-serif',
+            fillColor: col,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 3,
+            style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+            showBackground: false,
+            verticalOrigin: Cesium.VerticalOrigin.CENTER,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, getLabelMaxViewDistanceM(sel)),
+            scale: 1.0
+          }
+        });
+        labelEditorState.entities.push(e);
+      });
+    }
+    function refreshLabelListUI(){
+      const items = getCurrentSelectionLabels();
+      labelsExportBox.value = formatLabelAnnotations(items);
+      labelList.innerHTML='';
+      items.forEach(function(it, idx){
+        const btn = document.createElement('button');
+        btn.className='ui-btn';
+        btn.style.cssText='text-align:left;border-radius:10px;padding:8px;cursor:pointer';
+        if(idx===labelEditorState.selectedLabelIndex) btn.style.background='#eef6ff';
+        btn.innerHTML = '<div style="font-weight:600">'+(it.text||('Label '+(idx+1)))+'</div><div style="font-size:12px;opacity:.8">x '+Number(it.x).toFixed(2)+' • y '+Number(it.y).toFixed(2)+' • z '+Number(it.z).toFixed(2)+' • scale '+Number(it.scale||1).toFixed(2)+'</div>';
+        btn.onclick=function(){
+          labelEditorState.selectedLabelIndex = idx;
+          labelTextInput.value = it.text||'';
+          labelRaiseInput.value = Number(it.z||0).toFixed(2).replace(/\.00$/,'');
+          labelScaleInput.value = Number(it.scale||1).toFixed(2).replace(/\.00$/,'');
+          labelColorInput.value = it.color||'#00ff88';
+          labelEditorStatus.textContent = 'Selected label #' + (idx+1) + ' — position is already stored; click Pick label position to move it.';
+          refreshLabelListUI();
+        };
+        labelList.appendChild(btn);
+      });
+      if(!items.length) labelList.innerHTML='<div style="font-size:12px;color:#666">No labels yet for this item.</div>';
+      renderSelectionLabels();
+    }
+    function syncLabelToolsVisibility(){
+      const sel = labelEditorState.currentSelection;
+      const usable = !!sel && !sel.isExterior;
+      const admin = isEditorAdmin();
+
+      labelToolsCard.style.display = usable ? 'block' : 'none';
+      if(!usable){
+        labelEditorState.editMode = false;
+        labelEditorState.pendingPick = false;
+        editLabelsBtn.style.display = 'none';
+        labelEditorBody.style.display='none';
+        clearRenderedLabels();
+        return;
+      }
+
+      // Everyone can choose whether to view labels, but only admins can edit them.
+      editLabelsBtn.style.display = admin ? 'inline-flex' : 'none';
+
+      if(!admin){
+        labelEditorState.editMode = false;
+        labelEditorState.pendingPick = false;
+        labelEditorBody.style.display='none';
+        editLabelsBtn.textContent = 'Edit labels';
+        refreshLabelListUI();
+        return;
+      }
+
+      editLabelsBtn.textContent = labelEditorState.editMode ? 'Close editor' : 'Edit labels';
+      labelEditorBody.style.display = labelEditorState.editMode ? 'flex' : 'none';
+      refreshLabelListUI();
+    }
+    showLabelsToggle.checked = true;
+    showLabelsToggle.addEventListener('change', function(){ renderSelectionLabels(); });
+    editLabelsBtn.onclick = function(){
+      if(!isEditorAdmin()){
+        labelEditorState.editMode = false;
+        labelEditorState.pendingPick = false;
+        labelEditorBody.style.display = 'none';
+        return;
+      }
+      labelEditorState.editMode = !labelEditorState.editMode;
+      if(!labelEditorState.editMode) labelEditorState.pendingPick = false;
+      syncLabelToolsVisibility();
+    };
+    newLabelBtn.onclick = function(){
+      labelEditorState.selectedLabelIndex = -1;
+      labelTextInput.value = '';
+      labelRaiseInput.value = '0';
+      labelScaleInput.value = '1';
+      labelColorInput.value = '#00ff88';
+      labelEditorStatus.textContent = 'New label ready — click Pick label position.';
+      refreshLabelListUI();
+    };
+    deleteLabelBtn.onclick = function(){
+      const items = getCurrentSelectionLabels().slice();
+      const idx = labelEditorState.selectedLabelIndex;
+      if(idx<0 || idx>=items.length) return;
+      items.splice(idx,1);
+      labelEditorState.selectedLabelIndex = -1;
+      setCurrentSelectionLabels(items);
+      labelEditorStatus.textContent = 'Selected label deleted.';
+      refreshLabelListUI();
+    };
+    copyLabelsBtn.onclick = async function(){
+      labelsExportBox.value = formatLabelAnnotations(getCurrentSelectionLabels());
+      try{ await navigator.clipboard.writeText(labelsExportBox.value); labelEditorStatus.textContent='Export string copied. Paste it into label_annotations in Google Sheet.'; }catch(_){ labelEditorStatus.textContent='Export string ready below. Copy it manually if needed.'; }
+    };
+    pickLabelBtn.onclick = function(){
+      if(!labelEditorState.currentSelection || labelEditorState.currentSelection.isExterior) return;
+      labelEditorState.pendingPick = true;
+      labelEditorStatus.textContent = 'Now click on the 3D model to place the label.';
+    };
+    function handleLabelPlacement(screenPos){
+      if(!labelEditorState.pendingPick) return false;
+      const sel = labelEditorState.currentSelection;
+      if(!sel || sel.isExterior) return false;
+      let world = null;
+      try{ if(viewer.scene.pickPositionSupported) world = viewer.scene.pickPosition(screenPos); }catch(_){ }
+      if(!world){
+        try{
+          const ray = viewer.camera.getPickRay(screenPos);
+          world = viewer.scene.globe.pick(ray, viewer.scene);
+        }catch(_){ }
+      }
+      if(!world) return true;
+      const anchor = getSelectionAnchor(sel); if(!anchor) return true;
+      const local = Cesium.Matrix4.multiplyByPoint(anchor.inv, world, new Cesium.Cartesian3());
+      const items = getCurrentSelectionLabels().slice();
+      const idx = labelEditorState.selectedLabelIndex;
+      const item = {
+        text: String(labelTextInput.value||'Label').trim() || 'Label',
+        x: Number(local.x)||0,
+        y: Number(local.y)||0,
+        z: (Number(local.z)||0) + (Number(labelRaiseInput.value)||0),
+        scale: Number(labelScaleInput.value)>0 ? Number(labelScaleInput.value) : 1,
+        color: labelColorInput.value || '#00ff88'
+      };
+      if(idx>=0 && idx<items.length){ items[idx] = item; }
+      else { items.push(item); labelEditorState.selectedLabelIndex = items.length-1; }
+      setCurrentSelectionLabels(items);
+      labelEditorState.pendingPick = false;
+      labelEditorStatus.textContent = 'Label saved for current item. Copy the export string when ready.';
+      refreshLabelListUI();
+      return true;
+    }
     // ===== Picking (POI tooltip) =====
     const handler=new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
     handler.setInputAction(function (m){
+      if(labelEditorState.editMode && labelEditorState.pendingPick){
+        const used = handleLabelPlacement(m.position);
+        if(used){ tip.style.display='none'; return; }
+      }
       const picked=viewer.scene.pick(m.position);
       if(!picked || !picked.id || !poiIndexById.has(picked.id.id)){ tip.style.display='none'; return; }
       const ent=picked.id, props=ent.properties||{};
@@ -1027,6 +1434,7 @@ Promise.all([
       const selectedMeta=(interiorMetaByBuilding[idx]||[])[selectedIndex]||null;
       const selectedIsAmenity = !isExterior && selectedKind==='amenity' && !!selectedMeta;
       currentMode = isExterior ? 'exterior' : (selectedIsAmenity ? 'amenity' : 'interior');
+      labelEditorState.currentSelection = { bIdx: idx, kind: selectedKind, itemIdx: selectedIndex, meta: selectedMeta, row: row, isExterior: isExterior };
 
       modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&isExterior);
       (interiorEntitiesByBuilding[idx]||[]).forEach((ent,k)=>{
@@ -1060,37 +1468,38 @@ Promise.all([
         mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
         updateCommute(idx); commuteCard.style.display='block';
       } else if (selectedIsAmenity) {
-  const k=selectedIndex;
-  const ent=(interiorEntitiesByBuilding[idx]||[])[k];
-  const meta=selectedMeta||{};
+        const k=selectedIndex;
+        const ent=(interiorEntitiesByBuilding[idx]||[])[k];
+        const meta=selectedMeta||{};
 
-  if(ent){
-    const target=ent.position.getValue(Cesium.JulianDate.now());
-    const camHead=Cesium.Math.toRadians(
-      parseFirstNumber(
-        meta.camera_heading != null
-          ? meta.camera_heading
-          : meta.heading != null
-            ? meta.heading
-            : row.heading
-      ) || 0
-    );
-    const camPitch=Cesium.Math.toRadians(parseFirstNumber(meta.camera_pitch)||-15);
-    const range = parseFirstNumber(meta.camera_distance) || Math.max(25,(parseFirstNumber(meta.scale)||8)*12);
+        if(ent){
+          const target=ent.position.getValue(Cesium.JulianDate.now());
+          const camHead=Cesium.Math.toRadians(
+            parseFirstNumber(
+              meta.camera_heading != null
+                ? meta.camera_heading
+                : meta.heading != null
+                  ? meta.heading
+                  : row.heading
+            ) || 0
+          );
+          const camPitch=Cesium.Math.toRadians(parseFirstNumber(meta.camera_pitch)||-15);
+          const range = parseFirstNumber(meta.camera_distance) || Math.max(25,(parseFirstNumber(meta.scale)||8)*12);
 
-    viewer.scene.camera.lookAt(target, new Cesium.HeadingPitchRange(camHead,camPitch,range));
-    viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
-  }
+          viewer.scene.camera.lookAt(target, new Cesium.HeadingPitchRange(camHead,camPitch,range));
+          viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+        }
 
-  setInteriorMouseBindings();
-  interiorNav.enable();
-  setJoystickVisible(true);
+        // Amenities should behave like interior navigation, not exterior orbit mode.
+        setInteriorMouseBindings();
+        interiorNav.enable();
+        setJoystickVisible(true);
 
-  const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
-  const fr=viewer.camera.frustum;
-  if(fr && 'fov' in fr) fr.fov = saved * Math.PI/180;
-  fovRange.value = String(saved);
-  fovValEl.textContent = saved;
+        const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
+        const fr=viewer.camera.frustum;
+        if(fr && 'fov' in fr) fr.fov = saved * Math.PI/180;
+        fovRange.value = String(saved);
+        fovValEl.textContent = saved;
 
         title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
         const d = getItemDescription(selectedMeta, row).trim();
@@ -1165,6 +1574,8 @@ Promise.all([
           mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
         }
       }
+      syncLabelToolsVisibility();
+      renderSelectionLabels();
     }
 
     function refreshAllCityLayers(idx){
