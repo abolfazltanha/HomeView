@@ -1620,7 +1620,7 @@ function populateAdminEditor(meta, row){
 
 
 async function saveEditorPayloadToSheet(payload){
-  const response = await fetch('https://YOUR-PROJECT.vercel.app/api/save-editor', {
+  const response = await fetch('https://home-view-ruddy.vercel.app/api/save-editor', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
