@@ -198,19 +198,35 @@ function canonicalizeRow(row){
 
   return out;
 }
-  function getItemType(item){
-    const t = String(
-      (item && (item.item_type || item.type || item.category || item.kind || item.item_kind)) || ''
-    ).trim().toLowerCase();
+  function isAmenityRow(item){
+    if(!item) return false;
+    const explicit = firstFilled(item.category, item.type, item.kind, item.item_type).toLowerCase();
+    if (explicit.includes('amenity')) return true;
+    if (explicit === 'unit') return false;
 
-    if(t === 'amenity') return 'amenity';
-    if(t === 'future') return 'future';
-    if(t === 'unit') return 'unit';
-    return 'unit';
+    const hasModel = hasTextValue(item.model_url);
+
+    // Only fields that actually describe a saleable unit should make this a unit.
+    const hasUnitIdentity = [
+      item.list_price, item.price, item.estimated_price_unit, item.estimated_price,
+      item.bedrooms, item.beds, item.bed,
+      item.bathrooms, item.baths, item.bath,
+      item.area_m2, item.area_sqm, item.area_sqft, item.area, item.square_footage,
+      item.floor, item.level, item.exposure, item.unit_number
+    ].some(hasTextValue);
+
+    const hasBasicAmenityContent = [
+      getItemDisplayName(item),
+      getItemDescription(item)
+    ].some(hasTextValue);
+
+    // Any selectable item with no true unit identity should be treated as an amenity,
+    // even if it has maintenance/year/parking or a 3D model.
+    if (!hasUnitIdentity && hasBasicAmenityContent) return true;
+    if (!hasModel && hasBasicAmenityContent) return true;
+    return false;
   }
-  function isAmenityRow(item){ return getItemType(item) === 'amenity'; }
-  function isUnitRow(item){ return getItemType(item) === 'unit'; }
-  function isFutureRow(item){ return getItemType(item) === 'future'; }
+  function isUnitRow(item){ return !!item && !isAmenityRow(item); }
 
   // ========== 3D Tiles ==========
   let GOOGLE_3D_TILES = null;
@@ -397,9 +413,12 @@ const adminUnitEditorCard = document.createElement('div');
 adminUnitEditorCard.className = 'ui-card';
 adminUnitEditorCard.style.cssText = "border-radius:12px;padding:10px;display:none";
 adminUnitEditorCard.innerHTML = `
-  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
     <div style="font-weight:700">Admin Editor</div>
-    <button id="adminApplyBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Apply locally</button>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button id="adminApplyBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Apply locally</button>
+      <button id="adminSaveBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Save to Sheet</button>
+    </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
     <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Area<input id="adminAreaInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
@@ -417,9 +436,10 @@ adminUnitEditorCard.innerHTML = `
   <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Structures<input id="adminStructuresInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
   <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Heating Type<input id="adminHeatingInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
   <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Community Features<input id="adminCommunityInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
-  <div id="adminEditorStatus" style="font-size:12px;color:#555;margin-top:8px">Editor is local for now. Saving to sheet comes next.</div>`;
+  <div id="adminEditorStatus" style="font-size:12px;color:#555;margin-top:8px">Changes can be applied locally, then saved directly to Google Sheet.</div>`;
 panelBody.appendChild(adminUnitEditorCard);
 const adminApplyBtn = adminUnitEditorCard.querySelector('#adminApplyBtn');
+const adminSaveBtn = adminUnitEditorCard.querySelector('#adminSaveBtn');
 const adminAreaInput = adminUnitEditorCard.querySelector('#adminAreaInput');
 const adminPriceInput = adminUnitEditorCard.querySelector('#adminPriceInput');
 const adminBedsInput = adminUnitEditorCard.querySelector('#adminBedsInput');
@@ -681,6 +701,8 @@ function renderChipSection(section, items){
   const ADMIN_USERNAME = 'admin';
   const ADMIN_PASSWORD = 'HomeView2026!';
   const EDITOR_AUTH_STORAGE_KEY = 'homeview.editorAuth';
+  const EDITOR_SAVE_ENDPOINT = '/api/save-editor';
+  const EDITOR_SAVE_SECRET = '';
   function isEditorAdmin(){
     try{ return sessionStorage.getItem(EDITOR_AUTH_STORAGE_KEY) === '1'; }catch(_){ return false; }
   }
@@ -1094,7 +1116,7 @@ function fmtMoneyNoDash(n){
       const items=[];
       list.forEach((ur,k)=>{
         if(k===uIdx) return;
-        if(getItemType(ur) !== 'unit') return;
+        if(!isUnitRow(ur)) return;
         const pr=getCurrentPrice(ur,br); if(!Number.isFinite(pr)) return;
         if(Math.abs(pr-priceBase)>priceTol) return;
         const ar=getAreaM2(ur);
@@ -1596,6 +1618,101 @@ function populateAdminEditor(meta, row){
   adminCommunityInput.value = firstFilled(meta.community_features);
 }
 
+
+async function saveEditorPayloadToSheet(payload){
+  const response = await fetch('https://YOUR-PROJECT.vercel.app/api/save-editor', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  const raw = await response.text();
+  try{
+    return JSON.parse(raw);
+  }catch(_){
+    return { ok:false, error: raw || 'Unknown response' };
+  }
+}
+function buildEditorSavePayload(){
+  const sel = labelEditorState.currentSelection;
+  if(!sel || sel.isExterior || !sel.meta) return null;
+
+  const meta = sel.meta || {};
+  const buildingKey = firstFilled(meta.building_key, sel.row && sel.row.name, sel.row && sel.row.building_key);
+  const unitName = firstFilled(meta.unit_name, meta.name, meta.title);
+
+  if(!hasTextValue(buildingKey) || !hasTextValue(unitName)) return null;
+
+  return {
+building_key: buildingKey,
+    unit_name: unitName,
+    updates: {
+      description: adminDescInput.value.trim(),
+      square_footage: adminAreaInput.value.trim(),
+      area: adminAreaInput.value.trim(),
+      beds: adminBedsInput.value.trim(),
+      bedrooms: adminBedsInput.value.trim(),
+      bathrooms: adminBathsInput.value.trim(),
+      baths: adminBathsInput.value.trim(),
+      maintenance_fee: adminMaintenanceInput.value.trim(),
+      parking_spaces: adminParkingInput.value.trim(),
+      total_parking_spaces: adminParkingInput.value.trim(),
+      year_built: adminYearInput.value.trim(),
+      estimated_price: adminForecastInput.value.trim(),
+      building_features: adminBuildingFeaturesInput.value.trim(),
+      building_amenities: adminBuildingAmenitiesInput.value.trim(),
+      structures: adminStructuresInput.value.trim(),
+      heating_type: adminHeatingInput.value.trim(),
+      community_features: adminCommunityInput.value.trim(),
+      label_annotations: labelsExportBox.value.trim()
+    }
+  };
+}
+
+adminSaveBtn.onclick = async function(){
+  const sel = labelEditorState.currentSelection;
+  if(!isEditorAdmin()){
+    adminEditorStatus.textContent = 'Admin access required.';
+    return;
+  }
+  if(!sel || sel.isExterior || !sel.meta){
+    adminEditorStatus.textContent = 'No editable unit selected.';
+    return;
+  }
+
+  adminApplyBtn.click();
+
+  const payload = buildEditorSavePayload();
+  if(!payload){
+    adminEditorStatus.textContent = 'Unable to build save payload for this item.';
+    return;
+  }
+
+  adminSaveBtn.disabled = true;
+  adminSaveBtn.textContent = 'Saving...';
+  adminEditorStatus.textContent = 'Saving changes to Google Sheet...';
+
+  try{
+    const result = await saveEditorPayloadToSheet(payload);
+    if(result && result.ok){
+      adminEditorStatus.textContent = 'Saved to Google Sheet successfully.';
+      adminSaveBtn.textContent = 'Saved ✓';
+      setTimeout(function(){
+        adminSaveBtn.disabled = false;
+        adminSaveBtn.textContent = 'Save to Sheet';
+      }, 1200);
+    }else{
+      adminEditorStatus.textContent = 'Save failed: ' + ((result && result.error) || 'Unknown error');
+      adminSaveBtn.disabled = false;
+      adminSaveBtn.textContent = 'Save to Sheet';
+    }
+  }catch(err){
+    adminEditorStatus.textContent = 'Save failed: ' + err;
+    adminSaveBtn.disabled = false;
+    adminSaveBtn.textContent = 'Save to Sheet';
+  }
+};
+
 adminApplyBtn.onclick = function(){
   const sel = labelEditorState.currentSelection;
   if(!sel || sel.isExterior || !sel.meta) return;
@@ -1712,10 +1829,8 @@ function hideUnitMetaUI(){
       const selectedKind=selectedParts[0]||'exterior';
       const selectedIndex=Number(selectedParts[1]||0);
       const selectedMeta=(interiorMetaByBuilding[idx]||[])[selectedIndex]||null;
-      const selectedType = !isExterior && selectedMeta ? getItemType(selectedMeta) : 'unit';
-      const selectedIsAmenity = !isExterior && selectedType==='amenity' && !!selectedMeta;
-      const selectedIsFuture = !isExterior && selectedType==='future' && !!selectedMeta;
-      currentMode = isExterior ? 'exterior' : ((selectedIsAmenity || selectedIsFuture) ? 'amenity' : 'interior');
+      const selectedIsAmenity = !isExterior && selectedKind==='amenity' && !!selectedMeta;
+      currentMode = isExterior ? 'exterior' : (selectedIsAmenity ? 'amenity' : 'interior');
       labelEditorState.currentSelection = { bIdx: idx, kind: selectedKind, itemIdx: selectedIndex, meta: selectedMeta, row: row, isExterior: isExterior };
 
       modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&isExterior);
