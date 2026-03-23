@@ -88,9 +88,11 @@ Promise.all([
     selectionIndicator: false,
     shadows: false,
     shouldAnimate: true,
+    requestRenderMode: true,
+    maximumRenderTimeChange: Infinity,
     contextOptions: {
       webgl: {
-        powerPreference: 'low-power',
+        powerPreference: IS_MOBILE ? 'low-power' : 'high-performance',
         antialias: false,
         alpha: false,
         depth: true,
@@ -99,7 +101,7 @@ Promise.all([
       }
     },
     useBrowserRecommendedResolution: IS_IOS ? true : false,
-    msaaSamples: IS_IOS ? 2 : 4,
+    msaaSamples: IS_MOBILE ? 1 : (IS_IOS ? 2 : 4),
   });
 
   // ---- Require WebGL2 (Cesium shaders use WebGL2 features like 'flat') ----
@@ -122,7 +124,7 @@ Promise.all([
     }, 16);
   }catch(_){}
 
-  try{ const fxaa = viewer.scene.postProcessStages.fxaa; if (fxaa) fxaa.enabled = true; }catch(e){}
+  try{ const fxaa = viewer.scene.postProcessStages.fxaa; if (fxaa) fxaa.enabled = !IS_MOBILE; }catch(e){}
 
   // current view mode (needed for FOV slider)
   let currentMode = 'exterior';
@@ -303,6 +305,14 @@ function parseFutureProjects(raw){
     const origin = Cesium.Cartesian3.fromDegrees(lon,lat,h);
     const enu = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
     return Cesium.Matrix4.multiplyByPoint(enu, new Cesium.Cartesian3(offE,offN,offU), new Cesium.Cartesian3());
+  }
+
+  function requestSceneRender(){
+    try{ viewer.scene.requestRender(); }catch(_){ }
+  }
+
+  function stopCameraTracking(){
+    try{ viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); }catch(_){ }
   }
 
   // ========== UI (left panel) ==========
@@ -926,6 +936,7 @@ async function refreshFutureProjects(bIdx){
   });
   updateEditorAuthUI();
 
+  try{ presetSelect.value = IS_MOBILE ? 'low' : 'balanced'; }catch(_){ }
 
   function applyGfxPreset(preset){
     try { viewer.useBrowserRecommendedResolution = false; } catch(e){}
@@ -953,11 +964,8 @@ async function refreshFutureProjects(bIdx){
   Promise.all([fetchCSV(BUILDINGS_URL), fetchCSV(POIS_URL), fetchCSV(INTERIORS_URL)]).then(async ([csvB,csvP,csvI])=>{
     const b = Papa.parse(csvB,{header:true}).data.map(canonicalizeRow).filter(r=>r.model_url && r.lat && r.lng && (r.estimated_price || r.estimated_price_first));
     buildingsData = b;
-    const p = Papa.parse(csvP,{header:true, skipEmptyLines:'greedy'}).data.map(canonicalizeRow).filter(r=>r.name && r.lat && r.lng && r.type);
-    const inter = Papa.parse(csvI,{header:true, skipEmptyLines:'greedy'})
-      .data
-      .map(canonicalizeRow)
-      .filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
+    const p = Papa.parse(csvP,{header:true}).data.map(canonicalizeRow).filter(r=>r.name && r.lat && r.lng && r.type);
+    const inter = Papa.parse(csvI,{header:true}).data.map(canonicalizeRow).filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
 
     // selectors
     b.forEach((row,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=row.name||('Model #'+(i+1)); selectBox.appendChild(o); });
@@ -1038,50 +1046,69 @@ async function refreshFutureProjects(bIdx){
     });
 
     // Interiors / Amenities
-    // IMPORTANT PERFORMANCE FIX:
-    // Do NOT create every unit / amenity 3D model at startup.
-    // Cesium may begin fetching many hidden GLBs at once, which can cause
-    // intermittent missing units on refresh depending on timing / cache state.
-    // Instead, keep lightweight metadata in memory and lazily create only the
-    // currently requested model, then cache it.
-    const interiorEntitiesByBuilding=[]; const interiorMetaByBuilding=[];
-    const interiorEntityLoadPromisesByBuilding=[];
+    const interiorEntitiesByBuilding=[];
+    const interiorMetaByBuilding=[];
+    const interiorLoadPromisesByBuilding=[];
+    let activeInteriorSelection = null;
+    let interiorSwitchToken = 0;
+    let mobileViewChangeTimer = null;
+
     for (let i=0;i<b.length;i++){
       const br = b[i];
       const key=normKey(br.name); const list=interiorsByKey.get(key)||[];
       interiorMetaByBuilding[i]=list;
       interiorEntitiesByBuilding[i]=new Array(list.length).fill(null);
-      interiorEntityLoadPromisesByBuilding[i]=new Array(list.length).fill(null);
+      interiorLoadPromisesByBuilding[i]=new Array(list.length).fill(null);
     }
 
-    async function ensureInteriorEntityLoaded(bIdx, itemIdx){
-      const list = interiorMetaByBuilding[bIdx] || [];
-      const meta = list[itemIdx] || null;
+    async function ensureInteriorEntity(bIdx, itemIdx){
+      const meta = (interiorMetaByBuilding[bIdx]||[])[itemIdx] || null;
       if(!meta || !hasTextValue(meta.model_url)) return null;
-      if(interiorEntitiesByBuilding[bIdx] && interiorEntitiesByBuilding[bIdx][itemIdx]){
-        return interiorEntitiesByBuilding[bIdx][itemIdx];
-      }
-      if(interiorEntityLoadPromisesByBuilding[bIdx] && interiorEntityLoadPromisesByBuilding[bIdx][itemIdx]){
-        return await interiorEntityLoadPromisesByBuilding[bIdx][itemIdx];
-      }
+      if((interiorEntitiesByBuilding[bIdx]||[])[itemIdx]) return interiorEntitiesByBuilding[bIdx][itemIdx];
+      if((interiorLoadPromisesByBuilding[bIdx]||[])[itemIdx]) return interiorLoadPromisesByBuilding[bIdx][itemIdx];
 
-      const br = b[bIdx];
-      const loadPromise = (async function(){
-        try{
-          const ent = await createInteriorModel(br, meta, viewer);
-          ent.show = false;
+      const buildingRow = b[bIdx];
+      const p = createInteriorModel(buildingRow, meta, viewer)
+        .then(function(ent){
+          if(!interiorEntitiesByBuilding[bIdx]) interiorEntitiesByBuilding[bIdx]=[];
           interiorEntitiesByBuilding[bIdx][itemIdx] = ent;
+          if(ent) ent.show = false;
           return ent;
-        }catch(err){
-          console.warn('Failed to load interior model', bIdx, itemIdx, meta && (meta.unit_name || meta.name || meta.title || meta.model_url), err);
+        })
+        .catch(function(err){
+          console.warn('Interior model load failed:', err);
           return null;
-        }finally{
-          interiorEntityLoadPromisesByBuilding[bIdx][itemIdx] = null;
-        }
-      })();
+        })
+        .finally(function(){
+          if(interiorLoadPromisesByBuilding[bIdx]) interiorLoadPromisesByBuilding[bIdx][itemIdx] = null;
+          requestSceneRender();
+        });
 
-      interiorEntityLoadPromisesByBuilding[bIdx][itemIdx] = loadPromise;
-      return await loadPromise;
+      interiorLoadPromisesByBuilding[bIdx][itemIdx] = p;
+      return p;
+    }
+
+    function destroyInteriorEntity(bIdx, itemIdx){
+      const arr = interiorEntitiesByBuilding[bIdx] || [];
+      const ent = arr[itemIdx] || null;
+      if(ent){
+        try{ viewer.entities.remove(ent); }catch(_){ }
+      }
+      if(arr) arr[itemIdx] = null;
+      if(interiorLoadPromisesByBuilding[bIdx]) interiorLoadPromisesByBuilding[bIdx][itemIdx] = null;
+      requestSceneRender();
+    }
+
+    function destroyNonActiveInteriorEntities(nextSelection){
+      const keepB = nextSelection ? nextSelection.bIdx : -1;
+      const keepI = nextSelection ? nextSelection.itemIdx : -1;
+      for(let bi=0; bi<interiorEntitiesByBuilding.length; bi++){
+        const arr = interiorEntitiesByBuilding[bi] || [];
+        for(let ii=0; ii<arr.length; ii++){
+          if(bi===keepB && ii===keepI) continue;
+          if(arr[ii]) destroyInteriorEntity(bi, ii);
+        }
+      }
     }
 
     // ===== Compare Units =====
@@ -1922,8 +1949,22 @@ adminApplyBtn.onclick = function(){
     }
 
     // ===== Update View =====
-    selectBox.addEventListener('change', async ()=>{ rebuildViewOptions(Number(selectBox.value)); updateView(Number(selectBox.value)); await refreshFutureProjects(Number(selectBox.value)); });
-    viewSelect.addEventListener('change', async ()=>{ updateView(Number(selectBox.value)); await refreshFutureProjects(Number(selectBox.value)); });
+    function scheduleViewUpdate(){
+      const idx = Number(selectBox.value);
+      const delay = IS_MOBILE ? 180 : 0;
+      if(mobileViewChangeTimer){ clearTimeout(mobileViewChangeTimer); mobileViewChangeTimer = null; }
+      if(delay > 0){
+        mobileViewChangeTimer = setTimeout(function(){
+          mobileViewChangeTimer = null;
+          updateView(idx);
+        }, delay);
+      } else {
+        updateView(idx);
+      }
+    }
+
+    selectBox.addEventListener('change', async ()=>{ rebuildViewOptions(Number(selectBox.value)); scheduleViewUpdate(); await refreshFutureProjects(Number(selectBox.value)); });
+    viewSelect.addEventListener('change', async ()=>{ scheduleViewUpdate(); await refreshFutureProjects(Number(selectBox.value)); });
 
 
 function renderUnitMetaUI(meta, row){
@@ -1969,9 +2010,7 @@ function hideUnitMetaUI(){
   adminUnitEditorCard.style.display='none';
 }
 
-    let updateViewRequestId = 0;
     async function updateView(idx){
-      const requestId = ++updateViewRequestId;
       const row=b[idx];
       const selectedValue=viewSelect.value||'exterior';
       const isExterior=(selectedValue==='exterior');
@@ -1983,17 +2022,26 @@ function hideUnitMetaUI(){
       currentMode = isExterior ? 'exterior' : (selectedIsAmenity ? 'amenity' : 'interior');
       labelEditorState.currentSelection = { bIdx: idx, kind: selectedKind, itemIdx: selectedIndex, meta: selectedMeta, row: row, isExterior: isExterior };
 
-      if(!isExterior){
-        title.textContent=(row && row.name ? row.name : '') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
-        descBox.style.display='block';
-        descBox.textContent='Loading unit data...';
+      const thisSwitchToken = ++interiorSwitchToken;
+      const wantsInteriorModel = !isExterior && !!selectedMeta && hasTextValue(selectedMeta.model_url) && (selectedKind==='unit' || selectedKind==='amenity');
+
+      stopCameraTracking();
+      modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&isExterior);
+      destroyNonActiveInteriorEntities(wantsInteriorModel ? { bIdx: idx, itemIdx: selectedIndex } : null);
+
+      let activeInteriorEntity = null;
+      if(wantsInteriorModel){
+        activeInteriorSelection = { bIdx: idx, itemIdx: selectedIndex };
+        title.textContent = (row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '') + ' (loading...)';
+        requestSceneRender();
+        activeInteriorEntity = await ensureInteriorEntity(idx, selectedIndex);
+        if(thisSwitchToken !== interiorSwitchToken) return;
+      } else {
+        activeInteriorSelection = null;
       }
 
-      modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&isExterior);
-      interiorEntitiesByBuilding.forEach((arr, buildingIdx)=>{
-        (arr||[]).forEach((ent,k)=>{
-          if(ent) ent.show = !isExterior && (buildingIdx===idx) && (selectedIndex===k) && (selectedKind==='unit' || selectedKind==='amenity');
-        });
+      (interiorEntitiesByBuilding[idx]||[]).forEach((ent,k)=>{
+        if(ent) ent.show = !!activeInteriorEntity && (selectedIndex===k) && (selectedKind==='unit' || selectedKind==='amenity');
       });
 
       refreshPoisForSelection();
@@ -2007,6 +2055,7 @@ function hideUnitMetaUI(){
         let distance = (scale>0? scale*25 : (toNum(row.height)||10)*10); if(distance<60) distance=60;
         getBuildingSurfacePosition(lon,lat,height).then(center=>{
           viewer.scene.camera.lookAt(center, new Cesium.HeadingPitchRange(heading,pitch,distance));
+          requestSceneRender();
         });
         const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov=Math.PI/3;
 
@@ -2026,12 +2075,10 @@ function hideUnitMetaUI(){
         updateCommute(idx); commuteCard.style.display='block';
       } else if (selectedIsAmenity) {
         const k=selectedIndex;
+        const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
         const meta=selectedMeta||{};
-        const ent=await ensureInteriorEntityLoaded(idx, k);
-        if(requestId !== updateViewRequestId) return;
 
         if(ent){
-          ent.show = true;
           const target=ent.position.getValue(Cesium.JulianDate.now());
           const camHead=Cesium.Math.toRadians(
             parseFirstNumber(
@@ -2047,6 +2094,7 @@ function hideUnitMetaUI(){
 
           viewer.scene.camera.lookAt(target, new Cesium.HeadingPitchRange(camHead,camPitch,range));
           viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+          requestSceneRender();
         }
 
         // Amenities should behave like interior navigation, not exterior orbit mode.
@@ -2078,11 +2126,9 @@ function hideUnitMetaUI(){
         mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
       } else {
         const k=selectedIndex;
+        const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
         const meta=selectedMeta||{};
-        const ent=await ensureInteriorEntityLoaded(idx, k);
-        if(requestId !== updateViewRequestId) return;
         if(ent){
-          ent.show = true;
           const target=ent.position.getValue(Cesium.JulianDate.now());
           const camHead=Cesium.Math.toRadians(parseFirstNumber(meta.camera_heading!=null?meta.camera_heading:row.heading)||0);
           const camPitch=Cesium.Math.toRadians(parseFirstNumber(meta.camera_pitch)||-15);
@@ -2090,6 +2136,7 @@ function hideUnitMetaUI(){
 
           viewer.scene.camera.lookAt(target, new Cesium.HeadingPitchRange(camHead,camPitch,range));
           viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+          requestSceneRender();
           setInteriorMouseBindings(); interiorNav.enable(); setJoystickVisible(true);
 
           const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
@@ -2154,6 +2201,7 @@ function hideUnitMetaUI(){
     // init
     rebuildViewOptions(0);
     updateView(0);
+    requestSceneRender();
 
     // hide tooltip on camera move
     viewer.camera.changed.addEventListener(()=>{ tip.style.display='none'; });
@@ -2184,9 +2232,11 @@ function hideUnitMetaUI(){
     const ori=Cesium.Transforms.headingPitchRollQuaternion(pos,hpr);
     const scale=toNum(uRow.scale)||8;
     const name=uRow.unit_name||uRow.name||'Unit';
+    const minPx = IS_MOBILE ? 48 : 96;
+    const maxScale = IS_MOBILE ? Math.min(scale, 6) : scale;
     return viewer.entities.add({
       name:name, position:pos, orientation:ori,
-      model:{uri:uRow.model_url, minimumPixelSize:96, maximumScale:scale, scale:scale, shadows:Cesium.ShadowMode.DISABLED},
+      model:{uri:uRow.model_url, minimumPixelSize:minPx, maximumScale:maxScale, scale:scale, shadows:Cesium.ShadowMode.DISABLED},
       label:{ text:name, font:"15px sans-serif", fillColor:Cesium.Color.WHITE, outlineColor:Cesium.Color.BLACK, outlineWidth:2, style:Cesium.LabelStyle.FILL_AND_OUTLINE, verticalOrigin:Cesium.VerticalOrigin.BOTTOM, disableDepthTestDistance:Number.POSITIVE_INFINITY, pixelOffset:new Cesium.Cartesian2(0, -24) },
       show:false
     });
