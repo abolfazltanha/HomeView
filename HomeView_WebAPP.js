@@ -1678,6 +1678,8 @@ adminSaveBtn.onclick = async function(){
 
   adminApplyBtn.click();
 
+  labelsExportBox.value = formatLabelAnnotations(getCurrentSelectionLabels());
+
   const payload = buildEditorSavePayload();
   if(!payload){
     adminEditorStatus.textContent = 'Unable to build save payload for this item.';
