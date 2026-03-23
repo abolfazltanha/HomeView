@@ -401,6 +401,11 @@ function parseFutureProjects(raw){
   viewSelect.style.cssText="width:100%;padding:8px;border-radius:8px";
   panelBody.appendChild(viewSelect);
 
+  const viewLoadStatus = document.createElement('div');
+  viewLoadStatus.style.cssText="display:none;font-size:12px;color:#555;margin-top:-2px";
+  viewLoadStatus.textContent = 'Loading selected model...';
+  panelBody.appendChild(viewLoadStatus);
+
   const filterRow = document.createElement('div');
   filterRow.style.cssText="display:flex;flex-wrap:wrap;gap:6px";
   panelBody.appendChild(filterRow);
@@ -1049,9 +1054,92 @@ async function refreshFutureProjects(bIdx){
     const interiorEntitiesByBuilding=[];
     const interiorMetaByBuilding=[];
     const interiorLoadPromisesByBuilding=[];
+    const interiorBlobUrlsByBuilding=[];
+    const interiorBlobFetchPromisesByBuilding=[];
     let activeInteriorSelection = null;
     let interiorSwitchToken = 0;
     let mobileViewChangeTimer = null;
+    let viewLoadLockCount = 0;
+
+    function requestSceneRenderBurst(count){
+      let remaining = Math.max(1, count|0);
+      function tick(){
+        requestSceneRender();
+        remaining -= 1;
+        if(remaining > 0) requestAnimationFrame(tick);
+      }
+      tick();
+    }
+
+    function setSelectionControlsDisabled(disabled, message){
+      const flag = !!disabled;
+      selectBox.disabled = flag;
+      viewSelect.disabled = flag;
+      selectBox.style.opacity = flag ? '0.7' : '1';
+      viewSelect.style.opacity = flag ? '0.7' : '1';
+      viewLoadStatus.style.display = flag ? 'block' : 'none';
+      viewLoadStatus.textContent = message || 'Loading selected model...';
+    }
+
+    function beginViewLoad(message){
+      viewLoadLockCount += 1;
+      setSelectionControlsDisabled(true, message || 'Loading selected model...');
+    }
+
+    function endViewLoad(){
+      viewLoadLockCount = Math.max(0, viewLoadLockCount - 1);
+      if(viewLoadLockCount === 0) setSelectionControlsDisabled(false, '');
+    }
+
+    function safeModelUrl(rawUrl){
+      const src = String(rawUrl || '').trim();
+      if(!src) return '';
+      try{ return encodeURI(src); }catch(_){ return src; }
+    }
+
+    async function fetchModelBlobUrl(rawUrl, timeoutMs){
+      const url = safeModelUrl(rawUrl);
+      if(!url) throw new Error('Missing model URL');
+      const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      let timer = null;
+      if(controller && timeoutMs > 0){
+        timer = setTimeout(function(){ try{ controller.abort(); }catch(_){ } }, timeoutMs);
+      }
+      try{
+        const res = await fetch(url, { signal: controller ? controller.signal : undefined, cache: 'default', mode: 'cors' });
+        if(!res.ok) throw new Error('HTTP ' + res.status + ' for ' + url);
+        const blob = await res.blob();
+        return URL.createObjectURL(blob);
+      } finally {
+        if(timer) clearTimeout(timer);
+      }
+    }
+
+    async function ensureInteriorBlobUrl(bIdx, itemIdx, rawUrl){
+      if((interiorBlobUrlsByBuilding[bIdx]||[])[itemIdx]) return interiorBlobUrlsByBuilding[bIdx][itemIdx];
+      if((interiorBlobFetchPromisesByBuilding[bIdx]||[])[itemIdx]) return interiorBlobFetchPromisesByBuilding[bIdx][itemIdx];
+      const attempts = [18000, 26000];
+      const p = (async function(){
+        let lastErr = null;
+        for(let ai=0; ai<attempts.length; ai++){
+          try{
+            const blobUrl = await fetchModelBlobUrl(rawUrl, attempts[ai]);
+            if(!interiorBlobUrlsByBuilding[bIdx]) interiorBlobUrlsByBuilding[bIdx]=[];
+            interiorBlobUrlsByBuilding[bIdx][itemIdx] = blobUrl;
+            return blobUrl;
+          } catch(err){
+            lastErr = err;
+            console.warn('Model fetch attempt failed:', err);
+          }
+        }
+        throw lastErr || new Error('Unable to fetch model');
+      })().finally(function(){
+        if(interiorBlobFetchPromisesByBuilding[bIdx]) interiorBlobFetchPromisesByBuilding[bIdx][itemIdx] = null;
+      });
+      if(!interiorBlobFetchPromisesByBuilding[bIdx]) interiorBlobFetchPromisesByBuilding[bIdx]=[];
+      interiorBlobFetchPromisesByBuilding[bIdx][itemIdx] = p;
+      return p;
+    }
 
     for (let i=0;i<b.length;i++){
       const br = b[i];
@@ -1059,6 +1147,8 @@ async function refreshFutureProjects(bIdx){
       interiorMetaByBuilding[i]=list;
       interiorEntitiesByBuilding[i]=new Array(list.length).fill(null);
       interiorLoadPromisesByBuilding[i]=new Array(list.length).fill(null);
+      interiorBlobUrlsByBuilding[i]=new Array(list.length).fill(null);
+      interiorBlobFetchPromisesByBuilding[i]=new Array(list.length).fill(null);
     }
 
     async function ensureInteriorEntity(bIdx, itemIdx){
@@ -1068,35 +1158,50 @@ async function refreshFutureProjects(bIdx){
       if((interiorLoadPromisesByBuilding[bIdx]||[])[itemIdx]) return interiorLoadPromisesByBuilding[bIdx][itemIdx];
 
       const buildingRow = b[bIdx];
-      const p = createInteriorModel(buildingRow, meta, viewer)
-        .then(function(ent){
-          if(!interiorEntitiesByBuilding[bIdx]) interiorEntitiesByBuilding[bIdx]=[];
-          interiorEntitiesByBuilding[bIdx][itemIdx] = ent;
-          if(ent) ent.show = false;
-          return ent;
-        })
-        .catch(function(err){
-          console.warn('Interior model load failed:', err);
-          return null;
-        })
-        .finally(function(){
-          if(interiorLoadPromisesByBuilding[bIdx]) interiorLoadPromisesByBuilding[bIdx][itemIdx] = null;
-          requestSceneRender();
-        });
+      const p = (async function(){
+        let lastErr = null;
+        for(let attempt=0; attempt<2; attempt++){
+          try{
+            const blobUrl = await ensureInteriorBlobUrl(bIdx, itemIdx, meta.model_url);
+            const ent = await createInteriorModel(buildingRow, meta, viewer, blobUrl);
+            if(!interiorEntitiesByBuilding[bIdx]) interiorEntitiesByBuilding[bIdx]=[];
+            interiorEntitiesByBuilding[bIdx][itemIdx] = ent;
+            if(ent) ent.show = false;
+            requestSceneRenderBurst(8);
+            return ent;
+          } catch(err){
+            lastErr = err;
+            console.warn('Interior model load failed:', err);
+            destroyInteriorEntity(bIdx, itemIdx, { keepBlobUrl: false, silent: true });
+          }
+        }
+        return null;
+      })().finally(function(){
+        if(interiorLoadPromisesByBuilding[bIdx]) interiorLoadPromisesByBuilding[bIdx][itemIdx] = null;
+        requestSceneRenderBurst(6);
+      });
 
       interiorLoadPromisesByBuilding[bIdx][itemIdx] = p;
       return p;
     }
 
-    function destroyInteriorEntity(bIdx, itemIdx){
+    function destroyInteriorEntity(bIdx, itemIdx, opts){
+      const options = opts || {};
       const arr = interiorEntitiesByBuilding[bIdx] || [];
       const ent = arr[itemIdx] || null;
       if(ent){
-        try{ viewer.entities.remove(ent); }catch(_){ }
+        try{ if(ent.anchorEntity) viewer.entities.remove(ent.anchorEntity); }catch(_){ }
+        try{ if(ent.modelPrimitive) viewer.scene.primitives.remove(ent.modelPrimitive); }catch(_){ }
+        try{ if(ent.destroy) ent.destroy(); }catch(_){ }
       }
       if(arr) arr[itemIdx] = null;
       if(interiorLoadPromisesByBuilding[bIdx]) interiorLoadPromisesByBuilding[bIdx][itemIdx] = null;
-      requestSceneRender();
+      if(!options.keepBlobUrl && interiorBlobUrlsByBuilding[bIdx] && interiorBlobUrlsByBuilding[bIdx][itemIdx]){
+        try{ URL.revokeObjectURL(interiorBlobUrlsByBuilding[bIdx][itemIdx]); }catch(_){ }
+        interiorBlobUrlsByBuilding[bIdx][itemIdx] = null;
+      }
+      if(interiorBlobFetchPromisesByBuilding[bIdx]) interiorBlobFetchPromisesByBuilding[bIdx][itemIdx] = null;
+      if(!options.silent) requestSceneRenderBurst(4);
     }
 
     function destroyNonActiveInteriorEntities(nextSelection){
@@ -1106,7 +1211,7 @@ async function refreshFutureProjects(bIdx){
         const arr = interiorEntitiesByBuilding[bi] || [];
         for(let ii=0; ii<arr.length; ii++){
           if(bi===keepB && ii===keepI) continue;
-          if(arr[ii]) destroyInteriorEntity(bi, ii);
+          if(arr[ii]) destroyInteriorEntity(bi, ii, { keepBlobUrl: true });
         }
       }
     }
@@ -2013,6 +2118,7 @@ function hideUnitMetaUI(){
     async function updateView(idx){
       const row=b[idx];
       const selectedValue=viewSelect.value||'exterior';
+      let didBeginLoad = false;
       const isExterior=(selectedValue==='exterior');
       const selectedParts=selectedValue.split(':');
       const selectedKind=selectedParts[0]||'exterior';
@@ -2033,8 +2139,14 @@ function hideUnitMetaUI(){
       if(wantsInteriorModel){
         activeInteriorSelection = { bIdx: idx, itemIdx: selectedIndex };
         title.textContent = (row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '') + ' (loading...)';
-        requestSceneRender();
-        activeInteriorEntity = await ensureInteriorEntity(idx, selectedIndex);
+        beginViewLoad('Loading selected model...');
+        didBeginLoad = true;
+        requestSceneRenderBurst(3);
+        try{
+          activeInteriorEntity = await ensureInteriorEntity(idx, selectedIndex);
+        } finally {
+          if(didBeginLoad){ endViewLoad(); didBeginLoad = false; }
+        }
         if(thisSwitchToken !== interiorSwitchToken) return;
       } else {
         activeInteriorSelection = null;
@@ -2043,6 +2155,22 @@ function hideUnitMetaUI(){
       (interiorEntitiesByBuilding[idx]||[]).forEach((ent,k)=>{
         if(ent) ent.show = !!activeInteriorEntity && (selectedIndex===k) && (selectedKind==='unit' || selectedKind==='amenity');
       });
+
+      if(wantsInteriorModel && !activeInteriorEntity){
+        title.textContent = (row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '') + ' (model failed to load)';
+        descBox.style.display = 'block';
+        descBox.textContent = 'The model did not finish loading. Please try this unit again.';
+        hideUnitMetaUI();
+        priceCanvas.style.display='none';
+        loanCard.style.display='none';
+        compareCard.style.display='none';
+        similarCard.style.display='none';
+        priceCard.style.display='none';
+        commuteCard.style.display='none';
+        refreshPoisForSelection();
+        refreshFutureProjects(idx);
+        return;
+      }
 
       refreshPoisForSelection();
       refreshFutureProjects(idx);
@@ -2222,7 +2350,7 @@ function hideUnitMetaUI(){
     });
   }
 
-  async function createInteriorModel(bRow,uRow,viewer){
+  async function createInteriorModel(bRow,uRow,viewer,modelUrl){
     const baseLon=toNum(bRow.lng), baseLat=toNum(bRow.lat), baseH=toNum(bRow.height)||20;
     const baseSurfaceH = await getSurfaceHeight(baseLon, baseLat);
     const offE=toNum(uRow.offset_east_m)||0, offN=toNum(uRow.offset_north_m)||0, offU=toNum(uRow.offset_up_m)||0;
@@ -2234,12 +2362,53 @@ function hideUnitMetaUI(){
     const name=uRow.unit_name||uRow.name||'Unit';
     const minPx = IS_MOBILE ? 48 : 96;
     const maxScale = IS_MOBILE ? Math.min(scale, 6) : scale;
-    return viewer.entities.add({
-      name:name, position:pos, orientation:ori,
-      model:{uri:uRow.model_url, minimumPixelSize:minPx, maximumScale:maxScale, scale:scale, shadows:Cesium.ShadowMode.DISABLED},
+
+    const anchorEntity = viewer.entities.add({
+      name:name,
+      position:pos,
+      orientation:new Cesium.ConstantProperty(ori),
       label:{ text:name, font:"15px sans-serif", fillColor:Cesium.Color.WHITE, outlineColor:Cesium.Color.BLACK, outlineWidth:2, style:Cesium.LabelStyle.FILL_AND_OUTLINE, verticalOrigin:Cesium.VerticalOrigin.BOTTOM, disableDepthTestDistance:Number.POSITIVE_INFINITY, pixelOffset:new Cesium.Cartesian2(0, -24) },
       show:false
     });
+
+    const modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(pos, hpr);
+    const modelPrimitive = await Cesium.Model.fromGltfAsync({
+      url:modelUrl,
+      modelMatrix:modelMatrix,
+      scale:scale,
+      minimumPixelSize:minPx,
+      maximumScale:maxScale,
+      shadows:Cesium.ShadowMode.DISABLED,
+      incrementallyLoadTextures:false,
+      asynchronous:true,
+      allowPicking:false
+    });
+    modelPrimitive.show = false;
+    viewer.scene.primitives.add(modelPrimitive);
+
+    const handle = {
+      anchorEntity: anchorEntity,
+      modelPrimitive: modelPrimitive,
+      position: anchorEntity.position,
+      orientation: anchorEntity.orientation,
+      _show: false,
+      destroy: function(){
+        try{ if(this.modelPrimitive && !this.modelPrimitive.isDestroyed()) this.modelPrimitive.destroy(); }catch(_){ }
+        this.modelPrimitive = null;
+        this.anchorEntity = null;
+      }
+    };
+    Object.defineProperty(handle, 'show', {
+      get: function(){ return this._show; },
+      set: function(v){
+        const flag = !!v;
+        this._show = flag;
+        if(this.anchorEntity) this.anchorEntity.show = flag;
+        if(this.modelPrimitive) this.modelPrimitive.show = flag;
+      }
+    });
+    handle.show = false;
+    return handle;
   }
 
   // ========== Compass ==========
