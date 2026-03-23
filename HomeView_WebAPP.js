@@ -953,8 +953,11 @@ async function refreshFutureProjects(bIdx){
   Promise.all([fetchCSV(BUILDINGS_URL), fetchCSV(POIS_URL), fetchCSV(INTERIORS_URL)]).then(async ([csvB,csvP,csvI])=>{
     const b = Papa.parse(csvB,{header:true}).data.map(canonicalizeRow).filter(r=>r.model_url && r.lat && r.lng && (r.estimated_price || r.estimated_price_first));
     buildingsData = b;
-    const p = Papa.parse(csvP,{header:true}).data.map(canonicalizeRow).filter(r=>r.name && r.lat && r.lng && r.type);
-    const inter = Papa.parse(csvI,{header:true}).data.map(canonicalizeRow).filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
+    const p = Papa.parse(csvP,{header:true, skipEmptyLines:'greedy'}).data.map(canonicalizeRow).filter(r=>r.name && r.lat && r.lng && r.type);
+    const inter = Papa.parse(csvI,{header:true, skipEmptyLines:'greedy'})
+      .data
+      .map(canonicalizeRow)
+      .filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
 
     // selectors
     b.forEach((row,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=row.name||('Model #'+(i+1)); selectBox.appendChild(o); });
@@ -1035,22 +1038,50 @@ async function refreshFutureProjects(bIdx){
     });
 
     // Interiors / Amenities
+    // IMPORTANT PERFORMANCE FIX:
+    // Do NOT create every unit / amenity 3D model at startup.
+    // Cesium may begin fetching many hidden GLBs at once, which can cause
+    // intermittent missing units on refresh depending on timing / cache state.
+    // Instead, keep lightweight metadata in memory and lazily create only the
+    // currently requested model, then cache it.
     const interiorEntitiesByBuilding=[]; const interiorMetaByBuilding=[];
+    const interiorEntityLoadPromisesByBuilding=[];
     for (let i=0;i<b.length;i++){
       const br = b[i];
       const key=normKey(br.name); const list=interiorsByKey.get(key)||[];
-      interiorEntitiesByBuilding[i]=[]; interiorMetaByBuilding[i]=list;
-      for (let k=0;k<list.length;k++){
-        const u = list[k];
-        let e = null;
-        // Amenities may also have their own 3D model and placement data.
-        // Create an entity for any selectable interior item that has a model_url.
-        if (hasTextValue(u.model_url)) {
-          e = await createInteriorModel(br,u,viewer);
-          e.show=false;
-        }
-        interiorEntitiesByBuilding[i][k]=e;
+      interiorMetaByBuilding[i]=list;
+      interiorEntitiesByBuilding[i]=new Array(list.length).fill(null);
+      interiorEntityLoadPromisesByBuilding[i]=new Array(list.length).fill(null);
+    }
+
+    async function ensureInteriorEntityLoaded(bIdx, itemIdx){
+      const list = interiorMetaByBuilding[bIdx] || [];
+      const meta = list[itemIdx] || null;
+      if(!meta || !hasTextValue(meta.model_url)) return null;
+      if(interiorEntitiesByBuilding[bIdx] && interiorEntitiesByBuilding[bIdx][itemIdx]){
+        return interiorEntitiesByBuilding[bIdx][itemIdx];
       }
+      if(interiorEntityLoadPromisesByBuilding[bIdx] && interiorEntityLoadPromisesByBuilding[bIdx][itemIdx]){
+        return await interiorEntityLoadPromisesByBuilding[bIdx][itemIdx];
+      }
+
+      const br = b[bIdx];
+      const loadPromise = (async function(){
+        try{
+          const ent = await createInteriorModel(br, meta, viewer);
+          ent.show = false;
+          interiorEntitiesByBuilding[bIdx][itemIdx] = ent;
+          return ent;
+        }catch(err){
+          console.warn('Failed to load interior model', bIdx, itemIdx, meta && (meta.unit_name || meta.name || meta.title || meta.model_url), err);
+          return null;
+        }finally{
+          interiorEntityLoadPromisesByBuilding[bIdx][itemIdx] = null;
+        }
+      })();
+
+      interiorEntityLoadPromisesByBuilding[bIdx][itemIdx] = loadPromise;
+      return await loadPromise;
     }
 
     // ===== Compare Units =====
@@ -1938,7 +1969,9 @@ function hideUnitMetaUI(){
   adminUnitEditorCard.style.display='none';
 }
 
-    function updateView(idx){
+    let updateViewRequestId = 0;
+    async function updateView(idx){
+      const requestId = ++updateViewRequestId;
       const row=b[idx];
       const selectedValue=viewSelect.value||'exterior';
       const isExterior=(selectedValue==='exterior');
@@ -1950,9 +1983,17 @@ function hideUnitMetaUI(){
       currentMode = isExterior ? 'exterior' : (selectedIsAmenity ? 'amenity' : 'interior');
       labelEditorState.currentSelection = { bIdx: idx, kind: selectedKind, itemIdx: selectedIndex, meta: selectedMeta, row: row, isExterior: isExterior };
 
+      if(!isExterior){
+        title.textContent=(row && row.name ? row.name : '') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
+        descBox.style.display='block';
+        descBox.textContent='Loading unit data...';
+      }
+
       modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&isExterior);
-      (interiorEntitiesByBuilding[idx]||[]).forEach((ent,k)=>{
-        if(ent) ent.show = !isExterior && (selectedIndex===k) && (selectedKind==='unit' || selectedKind==='amenity');
+      interiorEntitiesByBuilding.forEach((arr, buildingIdx)=>{
+        (arr||[]).forEach((ent,k)=>{
+          if(ent) ent.show = !isExterior && (buildingIdx===idx) && (selectedIndex===k) && (selectedKind==='unit' || selectedKind==='amenity');
+        });
       });
 
       refreshPoisForSelection();
@@ -1985,10 +2026,12 @@ function hideUnitMetaUI(){
         updateCommute(idx); commuteCard.style.display='block';
       } else if (selectedIsAmenity) {
         const k=selectedIndex;
-        const ent=(interiorEntitiesByBuilding[idx]||[])[k];
         const meta=selectedMeta||{};
+        const ent=await ensureInteriorEntityLoaded(idx, k);
+        if(requestId !== updateViewRequestId) return;
 
         if(ent){
+          ent.show = true;
           const target=ent.position.getValue(Cesium.JulianDate.now());
           const camHead=Cesium.Math.toRadians(
             parseFirstNumber(
@@ -2035,9 +2078,11 @@ function hideUnitMetaUI(){
         mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
       } else {
         const k=selectedIndex;
-        const ent=(interiorEntitiesByBuilding[idx]||[])[k];
         const meta=selectedMeta||{};
+        const ent=await ensureInteriorEntityLoaded(idx, k);
+        if(requestId !== updateViewRequestId) return;
         if(ent){
+          ent.show = true;
           const target=ent.position.getValue(Cesium.JulianDate.now());
           const camHead=Cesium.Math.toRadians(parseFirstNumber(meta.camera_heading!=null?meta.camera_heading:row.heading)||0);
           const camPitch=Cesium.Math.toRadians(parseFirstNumber(meta.camera_pitch)||-15);
