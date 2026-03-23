@@ -493,15 +493,11 @@ function renderChipSection(section, items){
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <div style="font-weight:700">3D Labels</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px">
-          <input id="showLabelsToggle" type="checkbox">
-          <span>Show labels</span>
-        </label>
         <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
       </div>
     </div>
     <div id="labelEditorBody" style="display:none;flex-direction:column;gap:8px;margin-top:10px">
-      <div style="font-size:12px;line-height:1.5;color:#444">Click <b>Pick label position</b>, then click anywhere on the current 3D model to place a text label. Copy the exported string and save it into the sheet column <b>label_annotations</b>.</div>
+      <div style="font-size:12px;line-height:1.5;color:#444">Click <b>Pick label position</b>, then click anywhere on the current 3D model to place a text label. Label changes are saved together with your other edits.</div>
       <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Label text
         <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px">
       </label>
@@ -511,19 +507,16 @@ function renderChipSection(section, items){
         <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Color<input id="labelColorInput" class="ui-input" type="color" value="#00ff88" style="padding:4px;border-radius:8px;height:38px"></label>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
         <button id="newLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">New label</button>
+        <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
         <button id="deleteLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer;border-color:#ffcdd2;color:#b71c1c">Delete selected</button>
-        <button id="copyLabelsBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Copy export string</button>
       </div>
       <div id="labelEditorStatus" style="font-size:12px;color:#555">No label selected</div>
       <div id="labelList" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto"></div>
-      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Export string
-        <textarea id="labelsExportBox" class="ui-input" rows="5" style="padding:8px;border-radius:8px;resize:vertical"></textarea>
-      </label>
+      <textarea id="labelsExportBox" class="ui-input" rows="5" style="display:none;padding:8px;border-radius:8px;resize:vertical"></textarea>
     </div>`;
   panelBody.appendChild(labelToolsCard);
-  const showLabelsToggle = header.querySelector('#showLabelsHeaderToggle');
+  const showLabelsToggle = header.querySelector('#showLabelsHeaderToggle') || labelToolsCard.querySelector('#showLabelsToggle');
   const editLabelsBtn = labelToolsCard.querySelector('#editLabelsBtn');
   const labelEditorBody = labelToolsCard.querySelector('#labelEditorBody');
   const labelTextInput = labelToolsCard.querySelector('#labelTextInput');
@@ -1448,7 +1441,7 @@ function fmtMoneyNoDash(n){
     function renderSelectionLabels(){
       clearRenderedLabels();
       const sel = labelEditorState.currentSelection;
-      if(!sel || sel.isExterior || !showLabelsToggle.checked) return;
+      if(!sel || sel.isExterior || !showLabelsToggle || !showLabelsToggle.checked) return;
       const anchor = getSelectionAnchor(sel); if(!anchor) return;
       const items = getCurrentSelectionLabels();
       items.forEach(function(it){
@@ -1505,6 +1498,7 @@ function fmtMoneyNoDash(n){
 
       labelToolsCard.style.display = (usable && admin) ? 'block' : 'none';
       adminUnitEditorCard.style.display = (usable && admin) ? 'block' : 'none';
+
       if(!usable){
         labelEditorState.editMode = false;
         labelEditorState.pendingPick = false;
@@ -1528,8 +1522,10 @@ function fmtMoneyNoDash(n){
       labelEditorBody.style.display = labelEditorState.editMode ? 'flex' : 'none';
       refreshLabelListUI();
     }
-    showLabelsToggle.checked = false;
-    showLabelsToggle.addEventListener('change', function(){ renderSelectionLabels(); });
+    if (showLabelsToggle) {
+      showLabelsToggle.checked = false;
+      showLabelsToggle.addEventListener('change', function(){ renderSelectionLabels(); });
+    }
     editLabelsBtn.onclick = function(){
       if(!isEditorAdmin()){
         labelEditorState.editMode = false;
@@ -1560,10 +1556,7 @@ function fmtMoneyNoDash(n){
       labelEditorStatus.textContent = 'Selected label deleted.';
       refreshLabelListUI();
     };
-    copyLabelsBtn.onclick = async function(){
-      labelsExportBox.value = formatLabelAnnotations(getCurrentSelectionLabels());
-      try{ await navigator.clipboard.writeText(labelsExportBox.value); labelEditorStatus.textContent='Label export prepared.'; }catch(_){ labelEditorStatus.textContent='Export string ready below. Copy it manually if needed.'; }
-    };
+
     pickLabelBtn.onclick = function(){
       if(!labelEditorState.currentSelection || labelEditorState.currentSelection.isExterior) return;
       labelEditorState.pendingPick = true;
@@ -1598,7 +1591,7 @@ function fmtMoneyNoDash(n){
       else { items.push(item); labelEditorState.selectedLabelIndex = items.length-1; }
       setCurrentSelectionLabels(items);
       labelEditorState.pendingPick = false;
-      labelEditorStatus.textContent = 'Label changes are included when you save changes.';
+      labelEditorStatus.textContent = 'Label saved for current item. Copy the export string when ready.';
       refreshLabelListUI();
       return true;
     }
@@ -1734,7 +1727,7 @@ adminApplyBtn.onclick = function(){
   meta.structures = adminStructuresInput.value.trim();
   meta.heating_type = adminHeatingInput.value.trim();
   meta.community_features = adminCommunityInput.value.trim();
-  adminEditorStatus.textContent = 'Changes applied locally. Press Save changes to persist them.';
+  adminEditorStatus.textContent = 'Changes applied locally for current item. Save-to-sheet comes next.';
   updateView(Number(selectBox.value));
 };
 
