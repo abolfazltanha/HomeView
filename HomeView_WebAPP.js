@@ -533,7 +533,6 @@ function renderChipSection(section, items){
   const pickLabelBtn = labelToolsCard.querySelector('#pickLabelBtn');
   const newLabelBtn = labelToolsCard.querySelector('#newLabelBtn');
   const deleteLabelBtn = labelToolsCard.querySelector('#deleteLabelBtn');
-  const copyLabelsBtn = labelToolsCard.querySelector('#copyLabelsBtn');
   const labelEditorStatus = labelToolsCard.querySelector('#labelEditorStatus');
   const labelList = labelToolsCard.querySelector('#labelList');
   const labelsExportBox = labelToolsCard.querySelector('#labelsExportBox');
@@ -1504,7 +1503,7 @@ function fmtMoneyNoDash(n){
       const usable = !!sel && !sel.isExterior;
       const admin = isEditorAdmin();
 
-      labelToolsCard.style.display = usable ? 'block' : 'none';
+      labelToolsCard.style.display = (usable && admin) ? 'block' : 'none';
       adminUnitEditorCard.style.display = (usable && admin) ? 'block' : 'none';
       if(!usable){
         labelEditorState.editMode = false;
@@ -1522,7 +1521,6 @@ function fmtMoneyNoDash(n){
         labelEditorState.pendingPick = false;
         labelEditorBody.style.display='none';
         editLabelsBtn.textContent = 'Edit labels';
-        refreshLabelListUI();
         return;
       }
 
@@ -1564,7 +1562,7 @@ function fmtMoneyNoDash(n){
     };
     copyLabelsBtn.onclick = async function(){
       labelsExportBox.value = formatLabelAnnotations(getCurrentSelectionLabels());
-      try{ await navigator.clipboard.writeText(labelsExportBox.value); labelEditorStatus.textContent='Export string copied. Paste it into label_annotations.'; }catch(_){ labelEditorStatus.textContent='Export string ready below. Copy it manually if needed.'; }
+      try{ await navigator.clipboard.writeText(labelsExportBox.value); labelEditorStatus.textContent='Label export prepared.'; }catch(_){ labelEditorStatus.textContent='Export string ready below. Copy it manually if needed.'; }
     };
     pickLabelBtn.onclick = function(){
       if(!labelEditorState.currentSelection || labelEditorState.currentSelection.isExterior) return;
@@ -1600,7 +1598,7 @@ function fmtMoneyNoDash(n){
       else { items.push(item); labelEditorState.selectedLabelIndex = items.length-1; }
       setCurrentSelectionLabels(items);
       labelEditorState.pendingPick = false;
-      labelEditorStatus.textContent = 'Label saved for current item. Copy the export string when ready.';
+      labelEditorStatus.textContent = 'Label changes are included when you save changes.';
       refreshLabelListUI();
       return true;
     }
