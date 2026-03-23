@@ -4,7 +4,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const response = await fetch(process.env.EDITOR_SAVE_URL, {
+    const upstreamResponse = await fetch(process.env.EDITOR_SAVE_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -15,14 +15,16 @@ export default async function handler(req, res) {
       })
     });
 
-    const text = await response.text();
+    const text = await upstreamResponse.text();
 
+    let json;
     try {
-      const json = JSON.parse(text);
-      return res.status(200).json(json);
+      json = JSON.parse(text);
     } catch {
-      return res.status(200).json({ ok: false, error: text });
+      json = { ok: false, error: text || "Invalid upstream response" };
     }
+
+    return res.status(200).json(json);
   } catch (err) {
     return res.status(500).json({
       ok: false,
