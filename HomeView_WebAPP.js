@@ -425,22 +425,22 @@ adminUnitEditorCard.innerHTML = `
       <button id="adminSaveBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Save changes</button>
     </div>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Area<input id="adminAreaInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
-    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Price<input id="adminPriceInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
-    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Beds<input id="adminBedsInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
-    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Bathrooms<input id="adminBathsInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
-    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Maintenance Fee<input id="adminMaintenanceInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
-    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Parking Spaces<input id="adminParkingInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
-    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Year Built / Completion<input id="adminYearInput" class="ui-input" type="text" style="padding:8px;border-radius:8px"></label>
-    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Future Prices<input id="adminForecastInput" class="ui-input" type="text" placeholder="400000,480000,600000" style="padding:8px;border-radius:8px"></label>
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Area<input id="adminAreaInput" class="ui-input" type="text" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Price<input id="adminPriceInput" class="ui-input" type="text" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Beds<input id="adminBedsInput" class="ui-input" type="text" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Bathrooms<input id="adminBathsInput" class="ui-input" type="text" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Maintenance Fee<input id="adminMaintenanceInput" class="ui-input" type="text" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Parking Spaces<input id="adminParkingInput" class="ui-input" type="text" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Year Built / Completion<input id="adminYearInput" class="ui-input" type="text" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Future Prices<input id="adminForecastInput" class="ui-input" type="text" placeholder="400000,480000,600000" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
   </div>
-  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Description<textarea id="adminDescInput" class="ui-input" rows="4" style="padding:8px;border-radius:8px"></textarea></label>
-  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Building Features<input id="adminBuildingFeaturesInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
-  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Building Amenities<input id="adminBuildingAmenitiesInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
-  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Structures<input id="adminStructuresInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
-  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Heating Type<input id="adminHeatingInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
-  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Community Features<input id="adminCommunityInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Description<textarea id="adminDescInput" class="ui-input" rows="4" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></textarea></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Building Features<input id="adminBuildingFeaturesInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Building Amenities<input id="adminBuildingAmenitiesInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Structures<input id="adminStructuresInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Heating Type<input id="adminHeatingInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+  <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Community Features<input id="adminCommunityInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
   <div id="adminEditorStatus" style="font-size:12px;color:#555;margin-top:8px">Changes can be applied locally, then saved securely.</div>`;
 panelBody.appendChild(adminUnitEditorCard);
 const adminApplyBtn = adminUnitEditorCard.querySelector('#adminApplyBtn');
