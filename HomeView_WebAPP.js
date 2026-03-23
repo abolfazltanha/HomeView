@@ -325,6 +325,11 @@ function canonicalizeRow(row){
   hTitle.style.cssText="font-weight:700;font-size:16px";
   header.appendChild(hTitle);
 
+  const headerLabelsWrap = document.createElement('label');
+  headerLabelsWrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;margin-left:auto;white-space:nowrap";
+  headerLabelsWrap.innerHTML = '<input id="showLabelsHeaderToggle" type="checkbox"><span>Show labels</span>';
+  header.appendChild(headerLabelsWrap);
+
   const collapseBtn = document.createElement('button');
   collapseBtn.type = "button";
   collapseBtn.textContent='▾';
@@ -417,7 +422,7 @@ adminUnitEditorCard.innerHTML = `
     <div style="font-weight:700">Admin Editor</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       <button id="adminApplyBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Apply locally</button>
-      <button id="adminSaveBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Save to Sheet</button>
+      <button id="adminSaveBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Save changes</button>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -436,7 +441,7 @@ adminUnitEditorCard.innerHTML = `
   <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Structures<input id="adminStructuresInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
   <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Heating Type<input id="adminHeatingInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
   <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-top:8px">Community Features<input id="adminCommunityInput" class="ui-input" type="text" placeholder="A|B|C" style="padding:8px;border-radius:8px"></label>
-  <div id="adminEditorStatus" style="font-size:12px;color:#555;margin-top:8px">Changes can be applied locally, then saved directly to Google Sheet.</div>`;
+  <div id="adminEditorStatus" style="font-size:12px;color:#555;margin-top:8px">Changes can be applied locally, then saved securely.</div>`;
 panelBody.appendChild(adminUnitEditorCard);
 const adminApplyBtn = adminUnitEditorCard.querySelector('#adminApplyBtn');
 const adminSaveBtn = adminUnitEditorCard.querySelector('#adminSaveBtn');
@@ -518,7 +523,7 @@ function renderChipSection(section, items){
       </label>
     </div>`;
   panelBody.appendChild(labelToolsCard);
-  const showLabelsToggle = labelToolsCard.querySelector('#showLabelsToggle');
+  const showLabelsToggle = header.querySelector('#showLabelsHeaderToggle');
   const editLabelsBtn = labelToolsCard.querySelector('#editLabelsBtn');
   const labelEditorBody = labelToolsCard.querySelector('#labelEditorBody');
   const labelTextInput = labelToolsCard.querySelector('#labelTextInput');
@@ -1559,7 +1564,7 @@ function fmtMoneyNoDash(n){
     };
     copyLabelsBtn.onclick = async function(){
       labelsExportBox.value = formatLabelAnnotations(getCurrentSelectionLabels());
-      try{ await navigator.clipboard.writeText(labelsExportBox.value); labelEditorStatus.textContent='Export string copied. Paste it into label_annotations in Google Sheet.'; }catch(_){ labelEditorStatus.textContent='Export string ready below. Copy it manually if needed.'; }
+      try{ await navigator.clipboard.writeText(labelsExportBox.value); labelEditorStatus.textContent='Export string copied. Paste it into label_annotations.'; }catch(_){ labelEditorStatus.textContent='Export string ready below. Copy it manually if needed.'; }
     };
     pickLabelBtn.onclick = function(){
       if(!labelEditorState.currentSelection || labelEditorState.currentSelection.isExterior) return;
@@ -1690,26 +1695,26 @@ adminSaveBtn.onclick = async function(){
 
   adminSaveBtn.disabled = true;
   adminSaveBtn.textContent = 'Saving...';
-  adminEditorStatus.textContent = 'Saving changes to Google Sheet...';
+  adminEditorStatus.textContent = 'Saving changes...';
 
   try{
     const result = await saveEditorPayloadToSheet(payload);
     if(result && result.ok){
-      adminEditorStatus.textContent = 'Saved to Google Sheet successfully.';
+      adminEditorStatus.textContent = 'Saved successfully.';
       adminSaveBtn.textContent = 'Saved ✓';
       setTimeout(function(){
         adminSaveBtn.disabled = false;
-        adminSaveBtn.textContent = 'Save to Sheet';
+        adminSaveBtn.textContent = 'Save changes';
       }, 1200);
     }else{
       adminEditorStatus.textContent = 'Save failed: ' + ((result && result.error) || 'Unknown error');
       adminSaveBtn.disabled = false;
-      adminSaveBtn.textContent = 'Save to Sheet';
+      adminSaveBtn.textContent = 'Save changes';
     }
   }catch(err){
     adminEditorStatus.textContent = 'Save failed: ' + err;
     adminSaveBtn.disabled = false;
-    adminSaveBtn.textContent = 'Save to Sheet';
+    adminSaveBtn.textContent = 'Save changes';
   }
 };
 
@@ -1731,7 +1736,7 @@ adminApplyBtn.onclick = function(){
   meta.structures = adminStructuresInput.value.trim();
   meta.heating_type = adminHeatingInput.value.trim();
   meta.community_features = adminCommunityInput.value.trim();
-  adminEditorStatus.textContent = 'Changes applied locally for current item. Save-to-sheet comes next.';
+  adminEditorStatus.textContent = 'Changes applied locally. Press Save changes to persist them.';
   updateView(Number(selectBox.value));
 };
 
