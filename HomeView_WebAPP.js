@@ -198,6 +198,27 @@ function canonicalizeRow(row){
 
   return out;
 }
+
+
+function parseFutureProjects(raw){
+  return String(raw||'')
+    .split(/;|\r?\n/)
+    .map(function(chunk){
+      const s = String(chunk||'').trim();
+      if(!s) return null;
+      const parts = s.split('|').map(function(x){ return String(x||'').trim(); });
+      if(parts.length < 6) return null;
+      const name = parts[0];
+      const lat = toNum(parts[1]);
+      const lng = toNum(parts[2]);
+      const height = Math.max(6, toNum(parts[3]) || 20);
+      const scale = Math.max(12, toNum(parts[4]) || 24);
+      const completion = parts[5];
+      if(!name || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+      return { name, lat, lng, height, scale, completion };
+    })
+    .filter(Boolean);
+}
   function isAmenityRow(item){
     if(!item) return false;
     const explicit = firstFilled(item.category, item.type, item.kind, item.item_type).toLowerCase();
@@ -329,6 +350,11 @@ function canonicalizeRow(row){
   headerLabelsWrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;margin-left:auto;white-space:nowrap";
   headerLabelsWrap.innerHTML = '<input id="showLabelsHeaderToggle" type="checkbox"><span>Show labels</span>';
   header.appendChild(headerLabelsWrap);
+
+  const headerFutureWrap = document.createElement('label');
+  headerFutureWrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap";
+  headerFutureWrap.innerHTML = '<input id="showFutureProjectsToggle" type="checkbox"><span>Show future</span>';
+  header.appendChild(headerFutureWrap);
 
   const collapseBtn = document.createElement('button');
   collapseBtn.type = "button";
@@ -493,11 +519,15 @@ function renderChipSection(section, items){
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <div style="font-weight:700">3D Labels</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+          <input id="showLabelsToggle" type="checkbox">
+          <span>Show labels</span>
+        </label>
         <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
       </div>
     </div>
     <div id="labelEditorBody" style="display:none;flex-direction:column;gap:8px;margin-top:10px">
-      <div style="font-size:12px;line-height:1.5;color:#444">Click <b>Pick label position</b>, then click anywhere on the current 3D model to place a text label. Label changes are saved together with your other edits.</div>
+      <div style="font-size:12px;line-height:1.5;color:#444">Click <b>Pick label position</b>, then click anywhere on the current 3D model to place a text label. Copy the exported string and save it into the sheet column <b>label_annotations</b>.</div>
       <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Label text
         <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px">
       </label>
@@ -507,16 +537,20 @@ function renderChipSection(section, items){
         <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Color<input id="labelColorInput" class="ui-input" type="color" value="#00ff88" style="padding:4px;border-radius:8px;height:38px"></label>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button id="newLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">New label</button>
         <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
+        <button id="newLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">New label</button>
         <button id="deleteLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer;border-color:#ffcdd2;color:#b71c1c">Delete selected</button>
+        <button id="copyLabelsBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Copy export string</button>
       </div>
       <div id="labelEditorStatus" style="font-size:12px;color:#555">No label selected</div>
       <div id="labelList" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto"></div>
-      <textarea id="labelsExportBox" class="ui-input" rows="5" style="display:none;padding:8px;border-radius:8px;resize:vertical"></textarea>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Export string
+        <textarea id="labelsExportBox" class="ui-input" rows="5" style="padding:8px;border-radius:8px;resize:vertical"></textarea>
+      </label>
     </div>`;
   panelBody.appendChild(labelToolsCard);
-  const showLabelsToggle = header.querySelector('#showLabelsHeaderToggle') || labelToolsCard.querySelector('#showLabelsToggle');
+  const showLabelsToggle = header.querySelector('#showLabelsHeaderToggle');
+  const showFutureProjectsToggle = header.querySelector('#showFutureProjectsToggle');
   const editLabelsBtn = labelToolsCard.querySelector('#editLabelsBtn');
   const labelEditorBody = labelToolsCard.querySelector('#labelEditorBody');
   const labelTextInput = labelToolsCard.querySelector('#labelTextInput');
@@ -526,6 +560,7 @@ function renderChipSection(section, items){
   const pickLabelBtn = labelToolsCard.querySelector('#pickLabelBtn');
   const newLabelBtn = labelToolsCard.querySelector('#newLabelBtn');
   const deleteLabelBtn = labelToolsCard.querySelector('#deleteLabelBtn');
+  const copyLabelsBtn = labelToolsCard.querySelector('#copyLabelsBtn');
   const labelEditorStatus = labelToolsCard.querySelector('#labelEditorStatus');
   const labelList = labelToolsCard.querySelector('#labelList');
   const labelsExportBox = labelToolsCard.querySelector('#labelsExportBox');
@@ -533,6 +568,78 @@ function renderChipSection(section, items){
   // Hide label editing tools by default; only admins can unlock them.
   editLabelsBtn.style.display = 'none';
   labelEditorBody.style.display = 'none';
+
+
+const futureProjectEntitiesByBuilding = [];
+function clearFutureProjectEntities(bIdx){
+  const list = futureProjectEntitiesByBuilding[bIdx] || [];
+  list.forEach(function(ent){
+    try{ viewer.entities.remove(ent); }catch(_){}
+  });
+  futureProjectEntitiesByBuilding[bIdx] = [];
+}
+function clearAllFutureProjectEntities(){
+  for(let i=0;i<futureProjectEntitiesByBuilding.length;i++){
+    clearFutureProjectEntities(i);
+  }
+}
+async function refreshFutureProjects(bIdx){
+  clearAllFutureProjectEntities();
+  if(!showFutureProjectsToggle || !showFutureProjectsToggle.checked) return;
+
+  const row = buildingsData[bIdx] || null;
+  if(!row) return;
+
+  const rawFuture = firstFilled(row.future_projects, row.futureprojects);
+  const items = parseFutureProjects(rawFuture);
+
+  if(!items.length) return;
+
+  const ents = [];
+  for (const fp of items){
+    let groundH = 0;
+    try{ groundH = await getSurfaceHeight(fp.lng, fp.lat); }catch(_){}
+
+    const widthDepth = Math.max(20, Number(fp.scale)||24);
+    const boxHeight = Math.max(12, Number(fp.height)||20);
+    const centerH = groundH + (boxHeight / 2) + 5;
+
+    const ent = viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(fp.lng, fp.lat, centerH),
+      box: {
+        dimensions: new Cesium.Cartesian3(widthDepth, widthDepth, boxHeight),
+        material: Cesium.Color.WHITE.withAlpha(0.55),
+        outline: true,
+        outlineColor: Cesium.Color.RED,
+        outlineWidth: 3
+      },
+      point: {
+        pixelSize: 18,
+        color: Cesium.Color.RED,
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 3,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        heightReference: Cesium.HeightReference.NONE
+      },
+      label: {
+        text: fp.name + (fp.completion ? ('\nCompletion: ' + fp.completion) : ''),
+        font: '18px sans-serif',
+        fillColor: Cesium.Color.YELLOW,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 4,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        showBackground: true,
+        backgroundColor: Cesium.Color.BLACK.withAlpha(0.72),
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+        pixelOffset: new Cesium.Cartesian2(0, -(Math.round(boxHeight / 2) + 26)),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        heightReference: Cesium.HeightReference.NONE
+      }
+    });
+    ents.push(ent);
+  }
+  futureProjectEntitiesByBuilding[bIdx] = ents;
+}
 
   const priceCanvas = document.createElement('canvas');
   priceCanvas.width = 310; priceCanvas.height=140;
@@ -840,9 +947,12 @@ function renderChipSection(section, items){
   const POIS_URL      = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSCBUEgH8lRsIIYHEKxCObvqj4Ztxy4RcAhyklS2VntlkTLQ7PthrSNMtwa-sIKTZ1tcqEuP6KucILJ/pub?gid=0&single=true&output=csv";
   const INTERIORS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSf6OimMf2GFXMiPRgOhhbNdwaijM3vPnFX5nlKREf9vYe3plFIkX0RPnRMbAa7fFt-iMc_VF-tcSfs/pub?gid=0&single=true&output=csv";
 
+  let buildingsData = [];
+
   // ===== Load & Build =====
   Promise.all([fetchCSV(BUILDINGS_URL), fetchCSV(POIS_URL), fetchCSV(INTERIORS_URL)]).then(async ([csvB,csvP,csvI])=>{
     const b = Papa.parse(csvB,{header:true}).data.map(canonicalizeRow).filter(r=>r.model_url && r.lat && r.lng && (r.estimated_price || r.estimated_price_first));
+    buildingsData = b;
     const p = Papa.parse(csvP,{header:true}).data.map(canonicalizeRow).filter(r=>r.name && r.lat && r.lng && r.type);
     const inter = Papa.parse(csvI,{header:true}).data.map(canonicalizeRow).filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
 
@@ -857,6 +967,8 @@ function renderChipSection(section, items){
       ent.show=(i===0);
       modelEntities.push(ent);
     }
+
+    for (let i=0;i<b.length;i++) futureProjectEntitiesByBuilding[i] = [];
 
     const buildingOrigins = await Promise.all(
       b.map(async row => {
@@ -1441,7 +1553,7 @@ function fmtMoneyNoDash(n){
     function renderSelectionLabels(){
       clearRenderedLabels();
       const sel = labelEditorState.currentSelection;
-      if(!sel || sel.isExterior || !showLabelsToggle || !showLabelsToggle.checked) return;
+      if(!sel || sel.isExterior || !showLabelsToggle.checked) return;
       const anchor = getSelectionAnchor(sel); if(!anchor) return;
       const items = getCurrentSelectionLabels();
       items.forEach(function(it){
@@ -1496,9 +1608,8 @@ function fmtMoneyNoDash(n){
       const usable = !!sel && !sel.isExterior;
       const admin = isEditorAdmin();
 
-      labelToolsCard.style.display = (usable && admin) ? 'block' : 'none';
+      labelToolsCard.style.display = usable ? 'block' : 'none';
       adminUnitEditorCard.style.display = (usable && admin) ? 'block' : 'none';
-
       if(!usable){
         labelEditorState.editMode = false;
         labelEditorState.pendingPick = false;
@@ -1515,6 +1626,7 @@ function fmtMoneyNoDash(n){
         labelEditorState.pendingPick = false;
         labelEditorBody.style.display='none';
         editLabelsBtn.textContent = 'Edit labels';
+        refreshLabelListUI();
         return;
       }
 
@@ -1522,10 +1634,16 @@ function fmtMoneyNoDash(n){
       labelEditorBody.style.display = labelEditorState.editMode ? 'flex' : 'none';
       refreshLabelListUI();
     }
-    if (showLabelsToggle) {
-      showLabelsToggle.checked = false;
-      showLabelsToggle.addEventListener('change', function(){ renderSelectionLabels(); });
-    }
+    showLabelsToggle.checked = false;
+    showLabelsToggle.addEventListener('change', function(){ renderSelectionLabels(); });
+    showFutureProjectsToggle.checked = false;
+    showFutureProjectsToggle.addEventListener('change', async function(){
+      if(!showFutureProjectsToggle.checked){
+        clearAllFutureProjectEntities();
+        return;
+      }
+      await refreshFutureProjects(Number(selectBox.value||0));
+    });
     editLabelsBtn.onclick = function(){
       if(!isEditorAdmin()){
         labelEditorState.editMode = false;
@@ -1556,7 +1674,10 @@ function fmtMoneyNoDash(n){
       labelEditorStatus.textContent = 'Selected label deleted.';
       refreshLabelListUI();
     };
-
+    copyLabelsBtn.onclick = async function(){
+      labelsExportBox.value = formatLabelAnnotations(getCurrentSelectionLabels());
+      try{ await navigator.clipboard.writeText(labelsExportBox.value); labelEditorStatus.textContent='Export string copied. Paste it into label_annotations.'; }catch(_){ labelEditorStatus.textContent='Export string ready below. Copy it manually if needed.'; }
+    };
     pickLabelBtn.onclick = function(){
       if(!labelEditorState.currentSelection || labelEditorState.currentSelection.isExterior) return;
       labelEditorState.pendingPick = true;
@@ -1678,8 +1799,6 @@ adminSaveBtn.onclick = async function(){
 
   adminApplyBtn.click();
 
-  labelsExportBox.value = formatLabelAnnotations(getCurrentSelectionLabels());
-
   const payload = buildEditorSavePayload();
   if(!payload){
     adminEditorStatus.textContent = 'Unable to build save payload for this item.';
@@ -1729,7 +1848,7 @@ adminApplyBtn.onclick = function(){
   meta.structures = adminStructuresInput.value.trim();
   meta.heating_type = adminHeatingInput.value.trim();
   meta.community_features = adminCommunityInput.value.trim();
-  adminEditorStatus.textContent = 'Changes applied locally for current item. Save-to-sheet comes next.';
+  adminEditorStatus.textContent = 'Changes applied locally. Press Save changes to persist them.';
   updateView(Number(selectBox.value));
 };
 
@@ -1772,8 +1891,8 @@ adminApplyBtn.onclick = function(){
     }
 
     // ===== Update View =====
-    selectBox.addEventListener('change', ()=>{ rebuildViewOptions(Number(selectBox.value)); updateView(Number(selectBox.value)); });
-    viewSelect.addEventListener('change', ()=>{ updateView(Number(selectBox.value)); });
+    selectBox.addEventListener('change', async ()=>{ rebuildViewOptions(Number(selectBox.value)); updateView(Number(selectBox.value)); await refreshFutureProjects(Number(selectBox.value)); });
+    viewSelect.addEventListener('change', async ()=>{ updateView(Number(selectBox.value)); await refreshFutureProjects(Number(selectBox.value)); });
 
 
 function renderUnitMetaUI(meta, row){
@@ -1837,6 +1956,7 @@ function hideUnitMetaUI(){
       });
 
       refreshPoisForSelection();
+      refreshFutureProjects(idx);
 
       if(isExterior){
         setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
