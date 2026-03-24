@@ -406,6 +406,28 @@ function parseFutureProjects(raw){
   viewLoadStatus.textContent = 'Loading selected model...';
   panelBody.appendChild(viewLoadStatus);
 
+
+  const finishCard = document.createElement('div');
+  finishCard.className = 'ui-card';
+  finishCard.style.cssText = "border-radius:12px;padding:10px;display:none";
+  finishCard.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+      <div style="font-weight:700">Interior Finishes</div>
+      <div id="finishStatus" style="font-size:12px;color:#555">Ready</div>
+    </div>
+    <div id="finishBody" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Flooring
+        <select id="floorFinishSelect" class="ui-select" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></select>
+      </label>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Cabinets
+        <select id="cabinetFinishSelect" class="ui-select" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></select>
+      </label>
+    </div>`;
+  panelBody.appendChild(finishCard);
+  const finishStatus = finishCard.querySelector('#finishStatus');
+  const floorFinishSelect = finishCard.querySelector('#floorFinishSelect');
+  const cabinetFinishSelect = finishCard.querySelector('#cabinetFinishSelect');
+
   const filterRow = document.createElement('div');
   filterRow.style.cssText="display:flex;flex-wrap:wrap;gap:6px";
   panelBody.appendChild(filterRow);
@@ -1163,7 +1185,8 @@ async function refreshFutureProjects(bIdx){
         for(let attempt=0; attempt<2; attempt++){
           try{
             const blobUrl = await ensureInteriorBlobUrl(bIdx, itemIdx, meta.model_url);
-            const ent = await createInteriorModel(buildingRow, meta, viewer, blobUrl);
+            const finishSelections = customizationSelectionsByKey.get(makeCustomizationSelectionKey(bIdx, itemIdx)) || null;
+            const ent = await createInteriorModel(buildingRow, meta, viewer, blobUrl, finishSelections);
             if(!interiorEntitiesByBuilding[bIdx]) interiorEntitiesByBuilding[bIdx]=[];
             interiorEntitiesByBuilding[bIdx][itemIdx] = ent;
             if(ent) ent.show = false;
@@ -1214,6 +1237,543 @@ async function refreshFutureProjects(bIdx){
           if(arr[ii]) destroyInteriorEntity(bi, ii, { keepBlobUrl: true });
         }
       }
+    }
+
+
+    let customizationApplyToken = 0;
+    let activeCustomizationState = null;
+    const customizationSelectionsByKey = new Map();
+    function makeCustomizationSelectionKey(bIdx, itemIdx){ return String(bIdx) + ':' + String(itemIdx); }
+
+    function parseBoolish(v){
+      if(v === true || v === false) return v;
+      const s = String(v == null ? '' : v).trim().toLowerCase();
+      if(!s) return false;
+      return ['1','true','yes','y','on','enable','enabled','customizable','allowed'].includes(s);
+    }
+
+    function decodeTextureLabelFromUrl(url){
+      const clean = String(url || '').split('?')[0].split('#')[0];
+      const last = clean.split('/').pop() || clean;
+      try{
+        return decodeURIComponent(last.replace(/\.[a-z0-9]+$/i,'').replace(/[_-]+/g,' ').trim()) || 'Option';
+      }catch(_){
+        return last.replace(/\.[a-z0-9]+$/i,'').replace(/[_-]+/g,' ').trim() || 'Option';
+      }
+    }
+
+    function parseTextureOptions(raw){
+      if(raw == null) return [];
+      if(Array.isArray(raw)){
+        return raw.map(function(item, idx){
+          if(item == null) return null;
+          if(typeof item === 'string'){
+            const s = item.trim();
+            if(!s) return null;
+            return { label: decodeTextureLabelFromUrl(s), url: s, value: s };
+          }
+          const url = firstFilled(item.url, item.href, item.src, item.texture, item.image);
+          if(!url) return null;
+          const label = firstFilled(item.name, item.label, item.title, decodeTextureLabelFromUrl(url), 'Option ' + (idx + 1));
+          return { label: label, url: url, value: url };
+        }).filter(Boolean);
+      }
+      const src = String(raw).trim();
+      if(!src) return [];
+      if((src.startsWith('[') && src.endsWith(']')) || (src.startsWith('{') && src.endsWith('}'))){
+        try{ return parseTextureOptions(JSON.parse(src)); }catch(_){ }
+      }
+      return src
+        .split(/\r?\n|;/)
+        .map(function(chunk){
+          const s = String(chunk || '').trim();
+          if(!s) return null;
+          const parts = s.split('|').map(function(x){ return String(x || '').trim(); }).filter(Boolean);
+          if(parts.length >= 2){
+            const url = parts.slice(1).join('|');
+            return { label: parts[0] || decodeTextureLabelFromUrl(url), url: url, value: url };
+          }
+          return { label: decodeTextureLabelFromUrl(s), url: s, value: s };
+        })
+        .filter(function(opt){ return !!(opt && opt.url); });
+    }
+
+    function uniqueTextureOptions(list){
+      const out = [];
+      const seen = new Set();
+      (list || []).forEach(function(opt){
+        if(!opt || !opt.url) return;
+        const key = String(opt.url).trim();
+        if(!key || seen.has(key)) return;
+        seen.add(key);
+        out.push({ label: opt.label || decodeTextureLabelFromUrl(key), url: key, value: key });
+      });
+      return out;
+    }
+
+    function getCustomizationConfig(meta, row){
+      const enabled = parseBoolish(firstFilled(
+        meta && meta.customizable,
+        meta && meta.is_customizable,
+        meta && meta.allow_customization,
+        meta && meta.can_customize,
+        meta && meta.customization_enabled,
+        meta && meta.customize,
+        row && row.customizable,
+        row && row.is_customizable,
+        row && row.allow_customization,
+        row && row.can_customize,
+        row && row.customization_enabled,
+        row && row.customize
+      ));
+      const floorOptions = uniqueTextureOptions(parseTextureOptions(firstFilled(
+        meta && meta.kafpoosh_textures,
+        meta && meta.floor_textures,
+        meta && meta.flooring_textures,
+        meta && meta.kafpoosh_options,
+        meta && meta.floor_options,
+        row && row.kafpoosh_textures,
+        row && row.floor_textures,
+        row && row.flooring_textures,
+        row && row.kafpoosh_options,
+        row && row.floor_options
+      )));
+      const cabinetOptions = uniqueTextureOptions(parseTextureOptions(firstFilled(
+        meta && meta.kabinet_textures,
+        meta && meta.cabinet_textures,
+        meta && meta.kitchen_cabinet_textures,
+        meta && meta.kabinet_options,
+        meta && meta.cabinet_options,
+        row && row.kabinet_textures,
+        row && row.cabinet_textures,
+        row && row.kitchen_cabinet_textures,
+        row && row.kabinet_options,
+        row && row.cabinet_options
+      )));
+      return {
+        enabled: enabled && (floorOptions.length > 0 || cabinetOptions.length > 0),
+        floorOptions: floorOptions,
+        cabinetOptions: cabinetOptions,
+        defaults: {
+          kafpoosh: firstFilled(meta && meta.selected_kafpoosh_texture, meta && meta.default_kafpoosh_texture, meta && meta.selected_floor_texture, meta && meta.default_floor_texture),
+          kabinet: firstFilled(meta && meta.selected_kabinet_texture, meta && meta.default_kabinet_texture, meta && meta.selected_cabinet_texture, meta && meta.default_cabinet_texture)
+        }
+      };
+    }
+
+    function setFinishControlsDisabled(disabled, message){
+      const flag = !!disabled;
+      floorFinishSelect.disabled = flag || floorFinishSelect.options.length <= 1;
+      cabinetFinishSelect.disabled = flag || cabinetFinishSelect.options.length <= 1;
+      floorFinishSelect.style.opacity = floorFinishSelect.disabled ? '0.7' : '1';
+      cabinetFinishSelect.style.opacity = cabinetFinishSelect.disabled ? '0.7' : '1';
+      finishStatus.textContent = message || 'Ready';
+    }
+
+    function hideFinishCard(){
+      finishCard.style.display = 'none';
+      floorFinishSelect.innerHTML = '';
+      cabinetFinishSelect.innerHTML = '';
+      activeCustomizationState = null;
+      setFinishControlsDisabled(false, 'Ready');
+    }
+
+    function fillFinishSelect(selectEl, options, placeholder){
+      selectEl.innerHTML = '';
+      const noneOpt = document.createElement('option');
+      noneOpt.value = '';
+      noneOpt.textContent = placeholder;
+      selectEl.appendChild(noneOpt);
+      (options || []).forEach(function(opt){
+        const o = document.createElement('option');
+        o.value = opt.url;
+        o.textContent = opt.label || decodeTextureLabelFromUrl(opt.url);
+        selectEl.appendChild(o);
+      });
+    }
+
+    function normalizeFinishName(name){
+      return String(name == null ? '' : name).trim().toLowerCase();
+    }
+
+    function isMaterialLike(obj){
+      if(!obj || typeof obj !== 'object') return false;
+      return !!(
+        obj.metallicRoughness ||
+        obj.pbrMetallicRoughness ||
+        obj.baseColorTexture ||
+        obj.baseColorFactor ||
+        obj.emissiveTexture ||
+        obj.normalTexture ||
+        obj.occlusionTexture
+      );
+    }
+
+    function debugListKnownFinishNames(model){
+      const out = new Set();
+      try{
+        const raw = model && model.__hvRawGltf;
+        if(raw && Array.isArray(raw.materials)) raw.materials.forEach(function(m){ if(m && m.name) out.add(String(m.name)); });
+        if(raw && Array.isArray(raw.nodes)) raw.nodes.forEach(function(n){ if(n && n.name) out.add(String(n.name)); });
+      }catch(_){ }
+      try{
+        const map = model && model._nodesByName ? model._nodesByName : null;
+        if(map) Object.keys(map).forEach(function(k){ if(k) out.add(String(k)); });
+      }catch(_){ }
+      try{
+        const sceneGraph = model && model._sceneGraph;
+        const runtimeNodes = sceneGraph && (sceneGraph._runtimeNodes || sceneGraph.runtimeNodes || sceneGraph.runtimeNodesById);
+        if(Array.isArray(runtimeNodes)) runtimeNodes.forEach(function(rn){
+          if(rn && rn.node && rn.node.name) out.add(String(rn.node.name));
+          const rps = rn && (rn.runtimePrimitives || (rn.node && rn.node.runtimePrimitives)) || [];
+          rps.forEach(function(rp){
+            const mat = rp && (rp.material || (rp.primitive && rp.primitive.material));
+            if(mat && mat.name) out.add(String(mat.name));
+          });
+        });
+      }catch(_){ }
+      return Array.from(out);
+    }
+
+    function getNodeByNameCI(model, targetName){
+      if(!model || !targetName) return null;
+      try{
+        if(typeof model.getNode === 'function'){
+          const direct = model.getNode(targetName);
+          if(direct) return direct;
+        }
+      }catch(_){ }
+      const map = model._nodesByName || {};
+      const wanted = normalizeFinishName(targetName);
+      const keys = Object.keys(map);
+      for(let i=0; i<keys.length; i++){
+        const key = keys[i];
+        if(normalizeFinishName(key) === wanted){
+          try{ return typeof model.getNode === 'function' ? model.getNode(key) : map[key]; }catch(_){ return map[key]; }
+        }
+      }
+      return null;
+    }
+
+    function collectMaterialRefsForTarget(model, objectName, materialName){
+      const refs = [];
+      const seenMaterials = new WeakSet();
+      const wantedObject = normalizeFinishName(objectName);
+      const wantedMaterial = normalizeFinishName(materialName || objectName);
+
+      function pushMaterial(material, primitive, nodeName, source){
+        if(!material || typeof material !== 'object') return;
+        if(seenMaterials.has(material)) return;
+        seenMaterials.add(material);
+        refs.push({ material: material, primitive: primitive || null, nodeName: nodeName || '', source: source || '' });
+      }
+
+      function maybePushNamedMaterial(candidate, primitive, nodeName, source){
+        if(!candidate || typeof candidate !== 'object') return;
+        const candName = normalizeFinishName(candidate.name);
+        if(isMaterialLike(candidate) && (!wantedMaterial || candName === wantedMaterial)){
+          pushMaterial(candidate, primitive, nodeName, source);
+        }
+        if(candidate.material && isMaterialLike(candidate.material)){
+          const nestedName = normalizeFinishName(candidate.material.name);
+          if(!wantedMaterial || nestedName === wantedMaterial || candName === wantedMaterial){
+            pushMaterial(candidate.material, primitive || candidate, nodeName, source + ':material');
+          }
+        }
+      }
+
+      function scanRuntimePrimitives(list, nodeName, source){
+        (list || []).forEach(function(rp){
+          if(!rp) return;
+          const primitive = rp.primitive || rp;
+          const material = primitive && primitive.material ? primitive.material : (rp.material || null);
+          maybePushNamedMaterial(material, primitive, nodeName, source + ':runtime');
+          maybePushNamedMaterial(primitive, primitive, nodeName, source + ':primitive');
+        });
+      }
+
+      // 1) Direct named node lookup using the public API.
+      try{
+        const node = getNodeByNameCI(model, objectName);
+        if(node){
+          const runtimeNode = node._runtimeNode || node.runtimeNode || null;
+          const runtimePrimitives = (runtimeNode && (runtimeNode.runtimePrimitives || (runtimeNode.node && runtimeNode.node.primitives))) || [];
+          scanRuntimePrimitives(runtimePrimitives, objectName, 'getNode');
+        }
+      }catch(_){ }
+      if(refs.length) return refs;
+
+      // 2) Walk the scene graph internals used by newer Cesium versions.
+      try{
+        const sceneGraph = model && model._sceneGraph;
+        const runtimeNodes = sceneGraph && (sceneGraph._runtimeNodes || sceneGraph.runtimeNodes || sceneGraph.runtimeNodesById);
+        if(Array.isArray(runtimeNodes)){
+          runtimeNodes.forEach(function(rn){
+            const nodeName = firstFilled(rn && rn.node && rn.node.name, rn && rn.name, '');
+            if(wantedObject && normalizeFinishName(nodeName) !== wantedObject) return;
+            scanRuntimePrimitives(rn && (rn.runtimePrimitives || (rn.node && rn.node.runtimePrimitives) || []), nodeName, 'sceneGraph');
+          });
+        }
+      }catch(_){ }
+      if(refs.length) return refs;
+
+      // 3) Generic deep scan as a robust fallback when Cesium internals differ.
+      const roots = [model, model && model._sceneGraph, model && model._loader, model && model.components, model && model.__hvRawGltf].filter(Boolean);
+      const visited = new WeakSet();
+      const queue = roots.map(function(root){ return { value: root, depth: 0, path: 'root', objectMatch: false }; });
+      let guard = 0;
+      while(queue.length && guard < 8000){
+        guard++;
+        const item = queue.shift();
+        const value = item.value;
+        if(!value || typeof value !== 'object') continue;
+        if(visited.has(value)) continue;
+        visited.add(value);
+
+        const valueName = normalizeFinishName(value.name);
+        const objectMatch = item.objectMatch || (!!wantedObject && valueName === wantedObject);
+
+        if(isMaterialLike(value)){
+          if((objectMatch && !wantedMaterial) || (wantedMaterial && valueName === wantedMaterial)){
+            pushMaterial(value, item.primitive || null, item.nodeName || item.path, 'deep:' + item.path);
+          }
+        }
+        if(value.material && isMaterialLike(value.material)){
+          const nestedName = normalizeFinishName(value.material.name);
+          if(objectMatch || (wantedMaterial && nestedName === wantedMaterial)){
+            pushMaterial(value.material, value, item.nodeName || item.path, 'deep:' + item.path + ':material');
+          }
+        }
+
+        if(item.depth >= 7) continue;
+        const entries = [];
+        if(Array.isArray(value)){
+          const limit = Math.min(value.length, 80);
+          for(let ai=0; ai<limit; ai++){
+            if(!(ai in value)) continue;
+            entries.push([String(ai), value[ai]]);
+          }
+        }else{
+          const rawEntries = Object.entries(value);
+          for(let ei=0; ei<rawEntries.length && ei<80; ei++) entries.push(rawEntries[ei]);
+        }
+        for(let i=0; i<entries.length; i++){
+          const pair = entries[i];
+          if(!pair) continue;
+          const key = pair[0];
+          const child = pair[1];
+          if(!child || typeof child !== 'object') continue;
+          queue.push({
+            value: child,
+            depth: item.depth + 1,
+            path: item.path + '.' + key,
+            objectMatch: objectMatch,
+            primitive: item.primitive || (key === 'primitive' ? child : null),
+            nodeName: item.nodeName || (valueName ? value.name : '')
+          });
+        }
+      }
+      return refs;
+    }
+
+
+    function cloneJson(value){
+      try{ return JSON.parse(JSON.stringify(value)); }catch(_){ return null; }
+    }
+
+    function findNodeIndicesByNameCI(gltf, targetName){
+      const out = [];
+      const nodes = gltf && Array.isArray(gltf.nodes) ? gltf.nodes : [];
+      const wanted = normalizeFinishName(targetName);
+      for(let i=0; i<nodes.length; i++){
+        const n = nodes[i];
+        if(n && normalizeFinishName(n.name) === wanted) out.push(i);
+      }
+      return out;
+    }
+
+    function collectNodeSubtreeIndices(gltf, startIndices){
+      const nodes = gltf && Array.isArray(gltf.nodes) ? gltf.nodes : [];
+      const out = new Set();
+      const queue = Array.isArray(startIndices) ? startIndices.slice() : [];
+      let guard = 0;
+      while(queue.length && guard < 5000){
+        guard++;
+        const idx = queue.shift();
+        if(typeof idx !== 'number' || idx < 0 || idx >= nodes.length) continue;
+        if(out.has(idx)) continue;
+        out.add(idx);
+        const node = nodes[idx];
+        const kids = node && Array.isArray(node.children) ? node.children : [];
+        for(let i=0; i<kids.length; i++) queue.push(kids[i]);
+      }
+      return Array.from(out);
+    }
+
+    function patchRawGltfTextureForObject(gltf, objectName, textureUrl){
+      if(!gltf || !objectName || !textureUrl) return false;
+      const nodes = Array.isArray(gltf.nodes) ? gltf.nodes : null;
+      const meshes = Array.isArray(gltf.meshes) ? gltf.meshes : null;
+      const materials = Array.isArray(gltf.materials) ? gltf.materials : null;
+      const textures = Array.isArray(gltf.textures) ? gltf.textures : null;
+      if(!nodes || !meshes || !materials || !textures) return false;
+      if(!Array.isArray(gltf.images)) gltf.images = [];
+      const images = gltf.images;
+
+      const startIndices = findNodeIndicesByNameCI(gltf, objectName);
+      if(!startIndices.length) return false;
+      const nodeIndices = collectNodeSubtreeIndices(gltf, startIndices);
+      let changed = false;
+
+      nodeIndices.forEach(function(nodeIdx){
+        const node = nodes[nodeIdx];
+        if(!node || typeof node.mesh !== 'number') return;
+        const mesh = meshes[node.mesh];
+        if(!mesh || !Array.isArray(mesh.primitives)) return;
+        mesh.primitives.forEach(function(primitive){
+          if(!primitive || typeof primitive.material !== 'number') return;
+          const sourceMaterial = materials[primitive.material];
+          if(!sourceMaterial) return;
+          const clonedMaterial = cloneJson(sourceMaterial);
+          const pbr = clonedMaterial && clonedMaterial.pbrMetallicRoughness;
+          const texInfo = pbr && pbr.baseColorTexture;
+          if(!texInfo || typeof texInfo.index !== 'number') return;
+          const sourceTexture = textures[texInfo.index];
+          if(!sourceTexture) return;
+
+          const clonedTexture = cloneJson(sourceTexture) || {};
+          let clonedImage = {};
+          if(typeof sourceTexture.source === 'number' && images[sourceTexture.source]){
+            clonedImage = cloneJson(images[sourceTexture.source]) || {};
+          }
+          delete clonedImage.bufferView;
+          delete clonedImage.mimeType;
+          clonedImage.uri = textureUrl;
+          images.push(clonedImage);
+          const newImageIdx = images.length - 1;
+
+          clonedTexture.source = newImageIdx;
+          textures.push(clonedTexture);
+          const newTextureIdx = textures.length - 1;
+
+          texInfo.index = newTextureIdx;
+          materials.push(clonedMaterial);
+          primitive.material = materials.length - 1;
+          changed = true;
+        });
+      });
+      return changed;
+    }
+
+    const applyFinishSelectionsToRawGltf = (globalThis.applyFinishSelectionsToRawGltf = function applyFinishSelectionsToRawGltf(gltf, finishSelections){
+      if(!gltf || !finishSelections) return false;
+      let changed = false;
+      if(finishSelections.kafpoosh) changed = patchRawGltfTextureForObject(gltf, 'Kafpoosh', finishSelections.kafpoosh) || changed;
+      if(finishSelections.kabinet) changed = patchRawGltfTextureForObject(gltf, 'Kabinet', finishSelections.kabinet) || changed;
+      return changed;
+    });
+
+    function assignTextureToMaterialRef(ref, textureUrl){
+      const material = ref && ref.material ? ref.material : null;
+      if(!material) return false;
+      const pbr = material.metallicRoughness || material.pbrMetallicRoughness || material._metallicRoughness || null;
+      const textureUniform = new Cesium.TextureUniform({ url: textureUrl, repeat: true });
+      const white4 = new Cesium.Cartesian4(1.0, 1.0, 1.0, 1.0);
+      let changed = false;
+      function trySet(obj, key, value){
+        if(!obj) return;
+        try{ obj[key] = value; changed = true; }catch(_){ }
+      }
+      function tryPatchBaseTexture(obj){
+        if(!obj) return;
+        try{ if(obj.baseColorTexture && typeof obj.baseColorTexture === 'object'){ obj.baseColorTexture.texture = textureUniform; changed = true; } }catch(_){ }
+        try{ obj.baseColorTexture = textureUniform; changed = true; }catch(_){ }
+        try{ obj.baseColorTexture = { texture: textureUniform, texCoord: 0 }; changed = true; }catch(_){ }
+      }
+      trySet(pbr, 'baseColorFactor', white4);
+      trySet(material, 'baseColorFactor', white4);
+      tryPatchBaseTexture(pbr);
+      tryPatchBaseTexture(material);
+      try{ if(ref.primitive && ref.primitive.material !== material){ ref.primitive.material = material; changed = true; } }catch(_){ }
+      return changed;
+    }
+
+    async function applyFinishTextureToEntity(entity, targetKey, textureUrl){
+      if(!entity || !entity.modelPrimitive || !textureUrl) return false;
+      const model = entity.modelPrimitive;
+      if(model.readyPromise){
+        try{ await model.readyPromise; }catch(_){ }
+      }
+      const prettyName = targetKey === 'kafpoosh' ? 'Kafpoosh' : 'Kabinet';
+      const refs = collectMaterialRefsForTarget(model, prettyName, prettyName);
+      if(!refs.length){
+        const known = debugListKnownFinishNames(model);
+        throw new Error('Target material was not found in the loaded model: ' + targetKey + (known.length ? ' | known names: ' + known.join(', ') : ''));
+      }
+      let changed = false;
+      refs.forEach(function(ref){ if(assignTextureToMaterialRef(ref, textureUrl)) changed = true; });
+      requestSceneRenderBurst(12);
+      return changed;
+    }
+
+    async function applyFinishSelection(targetKey){
+      const state = activeCustomizationState;
+      if(!state) return;
+      const selectEl = targetKey === 'kafpoosh' ? floorFinishSelect : cabinetFinishSelect;
+      const value = String(selectEl.value || '').trim();
+      if(!value) return;
+      const thisToken = ++customizationApplyToken;
+      setFinishControlsDisabled(true, 'Applying selected finish...');
+      try{
+        state.selections[targetKey] = value;
+        customizationSelectionsByKey.set(makeCustomizationSelectionKey(state.bIdx, state.itemIdx), Object.assign({}, state.selections));
+        destroyInteriorEntity(state.bIdx, state.itemIdx, { keepBlobUrl: true, silent: true });
+        const reloaded = await ensureInteriorEntity(state.bIdx, state.itemIdx);
+        if(thisToken !== customizationApplyToken) return;
+        if(!reloaded) throw new Error('Model reload failed after finish change');
+        reloaded.show = true;
+        state.entity = reloaded;
+        finishStatus.textContent = 'Finish updated';
+        requestSceneRenderBurst(10);
+      } catch(err){
+        if(thisToken !== customizationApplyToken) return;
+        console.warn('Finish apply failed:', err);
+        finishStatus.textContent = 'Could not apply this finish';
+      } finally {
+        if(thisToken === customizationApplyToken) setFinishControlsDisabled(false, finishStatus.textContent || 'Ready');
+      }
+    }
+
+    floorFinishSelect.addEventListener('change', function(){ applyFinishSelection('kafpoosh'); });
+    cabinetFinishSelect.addEventListener('change', function(){ applyFinishSelection('kabinet'); });
+
+    async function syncCustomizationUIForSelection(bIdx, itemIdx, meta, row, entity){
+      const cfg = getCustomizationConfig(meta, row);
+      if(!cfg.enabled || !entity){
+        hideFinishCard();
+        return;
+      }
+      fillFinishSelect(floorFinishSelect, cfg.floorOptions, cfg.floorOptions.length ? 'Choose flooring' : 'No flooring options');
+      fillFinishSelect(cabinetFinishSelect, cfg.cabinetOptions, cfg.cabinetOptions.length ? 'Choose cabinets' : 'No cabinet options');
+      finishCard.style.display = 'block';
+
+      const key = makeCustomizationSelectionKey(bIdx, itemIdx);
+      const savedSelections = customizationSelectionsByKey.get(key) || {};
+      const floorDefault = savedSelections.kafpoosh || cfg.defaults.kafpoosh || (cfg.floorOptions[0] && cfg.floorOptions[0].url) || '';
+      const cabinetDefault = savedSelections.kabinet || cfg.defaults.kabinet || (cfg.cabinetOptions[0] && cfg.cabinetOptions[0].url) || '';
+      const selections = { kafpoosh: floorDefault || '', kabinet: cabinetDefault || '' };
+      customizationSelectionsByKey.set(key, Object.assign({}, selections));
+
+      activeCustomizationState = {
+        bIdx: bIdx,
+        itemIdx: itemIdx,
+        entity: entity,
+        config: cfg,
+        selections: selections
+      };
+      if(floorDefault) floorFinishSelect.value = floorDefault;
+      if(cabinetDefault) cabinetFinishSelect.value = cabinetDefault;
+      setFinishControlsDisabled(false, 'Ready');
     }
 
     // ===== Compare Units =====
@@ -2161,6 +2721,7 @@ function hideUnitMetaUI(){
         descBox.style.display = 'block';
         descBox.textContent = 'The model did not finish loading. Please try this unit again.';
         hideUnitMetaUI();
+        hideFinishCard();
         priceCanvas.style.display='none';
         loanCard.style.display='none';
         compareCard.style.display='none';
@@ -2189,6 +2750,7 @@ function hideUnitMetaUI(){
 
         title.textContent=row.name||'';
         hideUnitMetaUI();
+        hideFinishCard();
         const d = getItemDescription(row).trim();
         descBox.style.display = d ? 'block' : 'none';
         descBox.textContent = d;
@@ -2238,6 +2800,7 @@ function hideUnitMetaUI(){
 
         title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
         hideUnitMetaUI();
+        await syncCustomizationUIForSelection(idx, k, selectedMeta, row, ent);
         if(isEditorAdmin()) populateAdminEditor(selectedMeta, row);
         const d = getItemDescription(selectedMeta, row).trim();
         descBox.style.display = d ? 'block' : 'none';
@@ -2273,6 +2836,8 @@ function hideUnitMetaUI(){
 
           title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
           renderUnitMetaUI(meta, row);
+          hideFinishCard();
+          await syncCustomizationUIForSelection(idx, k, meta, row, ent);
           if(isEditorAdmin()) populateAdminEditor(meta, row);
           const d = getItemDescription(meta, row).trim();
           descBox.style.display = d ? 'block' : 'none';
@@ -2304,6 +2869,7 @@ function hideUnitMetaUI(){
           setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
           title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
           renderUnitMetaUI(meta, row);
+          await syncCustomizationUIForSelection(idx, k, meta, row, ent);
           if(isEditorAdmin()) populateAdminEditor(meta, row);
           const d = getItemDescription(meta, row).trim();
           descBox.style.display = d ? 'block' : 'none';
@@ -2350,7 +2916,7 @@ function hideUnitMetaUI(){
     });
   }
 
-  async function createInteriorModel(bRow,uRow,viewer,modelUrl){
+  async function createInteriorModel(bRow,uRow,viewer,modelUrl,finishSelections){
     const baseLon=toNum(bRow.lng), baseLat=toNum(bRow.lat), baseH=toNum(bRow.height)||20;
     const baseSurfaceH = await getSurfaceHeight(baseLon, baseLat);
     const offE=toNum(uRow.offset_east_m)||0, offN=toNum(uRow.offset_north_m)||0, offU=toNum(uRow.offset_up_m)||0;
@@ -2372,6 +2938,7 @@ function hideUnitMetaUI(){
     });
 
     const modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(pos, hpr);
+    let hvRawGltf = null;
     const modelPrimitive = await Cesium.Model.fromGltfAsync({
       url:modelUrl,
       modelMatrix:modelMatrix,
@@ -2381,8 +2948,13 @@ function hideUnitMetaUI(){
       shadows:Cesium.ShadowMode.DISABLED,
       incrementallyLoadTextures:false,
       asynchronous:true,
-      allowPicking:false
+      allowPicking:false,
+      gltfCallback:function(gltf){
+        hvRawGltf = gltf;
+        try{ const fn=(typeof applyFinishSelectionsToRawGltf==='function'?applyFinishSelectionsToRawGltf:(globalThis&&typeof globalThis.applyFinishSelectionsToRawGltf==='function'?globalThis.applyFinishSelectionsToRawGltf:null)); if(fn) fn(gltf, finishSelections || null); else console.warn('Raw glTF finish patch skipped: applyFinishSelectionsToRawGltf not available'); }catch(err){ console.warn('Raw glTF finish patch failed:', err); }
+      }
     });
+    try{ modelPrimitive.__hvRawGltf = hvRawGltf; }catch(_){ }
     modelPrimitive.show = false;
     viewer.scene.primitives.add(modelPrimitive);
 
