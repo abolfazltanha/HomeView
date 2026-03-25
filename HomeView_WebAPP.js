@@ -1063,6 +1063,23 @@ async function refreshFutureProjects(bIdx){
     function colorForType(type){ const t=(type||'').toLowerCase(); if(t.includes('super'))return Cesium.Color.fromCssColorString('#2e7d32'); if(t.includes('school')||t.includes('univ'))return Cesium.Color.fromCssColorString('#1565c0'); if(t.includes('hosp')||t.includes('clinic'))return Cesium.Color.fromCssColorString('#c62828'); if(t.includes('park'))return Cesium.Color.fromCssColorString('#2e7d32').withAlpha(0.85); if(t.includes('transit')||t.includes('station')||t.includes('bus'))return Cesium.Color.fromCssColorString('#6d4c41'); if(t.includes('gym')||t.includes('fitness'))return Cesium.Color.fromCssColorString('#8e24aa'); if(t.includes('cafe')||t.includes('coffee'))return Cesium.Color.fromCssColorString('#5d4037'); return Cesium.Color.fromCssColorString('#455a64'); }
     function poiBillboard(type,icon){ const col=colorForType(type); const img = icon? pinBuilder.fromText(icon,col,42).toDataURL() : pinBuilder.fromColor(col,32).toDataURL(); return { image:img, verticalOrigin:Cesium.VerticalOrigin.BOTTOM, scale:1, disableDepthTestDistance:Number.POSITIVE_INFINITY }; }
     function metersBetween(a,b){ const g=new Cesium.EllipsoidGeodesic(a,b); return g.surfaceDistance; }
+    function getPoiRadiusMeters(buildingRow, poiRow, fallback){
+      const poiRadius = toNum(firstFilled(
+        poiRow && poiRow.radius,
+        poiRow && poiRow.radius_m,
+        poiRow && poiRow.poi_radius,
+        poiRow && poiRow.max_distance,
+        poiRow && poiRow.distance_m
+      ));
+      if (Number.isFinite(poiRadius) && poiRadius > 0) return poiRadius;
+      const buildingRadius = toNum(firstFilled(
+        buildingRow && buildingRow.radius_m,
+        buildingRow && buildingRow.poi_radius,
+        buildingRow && buildingRow.radius
+      ));
+      if (Number.isFinite(buildingRadius) && buildingRadius > 0) return buildingRadius;
+      return Number.isFinite(fallback) && fallback > 0 ? fallback : 800;
+    }
 
     b.forEach((br,i)=>{
       const ds=new Cesium.CustomDataSource('pois-'+i);
@@ -1070,14 +1087,15 @@ async function refreshFutureProjects(bIdx){
       poiSources[i]=ds; viewer.dataSources.add(ds);
 
       const key=normKey(br.name); const listKey=poisByKey.get(key)||[];
-      const radius=toNum(br.radius_m)||800; const cLat=toNum(br.lat), cLng=toNum(br.lng);
+      const defaultRadius=getPoiRadiusMeters(br, null, 800); const cLat=toNum(br.lat), cLng=toNum(br.lng);
       const center=Cesium.Cartographic.fromDegrees(cLng,cLat);
       const candidates = listKey.length>0 ? listKey : p;
       const types=new Set();
 
       candidates.forEach(poi=>{
         const plat=toNum(poi.lat), plng=toNum(poi.lng); if(!Number.isFinite(plat)||!Number.isFinite(plng)) return;
-        const dist=metersBetween(center, Cesium.Cartographic.fromDegrees(plng,plat)); if(dist>radius) return;
+        const poiRadius = getPoiRadiusMeters(br, poi, defaultRadius);
+        const dist=metersBetween(center, Cesium.Cartographic.fromDegrees(plng,plat)); if(dist>poiRadius) return;
         const type=(poi.type||'').toLowerCase().trim();
         const ent=ds.entities.add({
           position: Cesium.Cartesian3.fromDegrees(plng,plat,0),
@@ -2009,14 +2027,15 @@ function fmtMoneyNoDash(n){
     function prettyMin(m){ if(!Number.isFinite(m)) return '—'; if(m<1) return '<1m'; if(m<60) return Math.round(m)+'m'; const h=Math.floor(m/60), mm=Math.round(m%60); return h+'h '+(mm?mm+'m':''); }
     function updateCommute(bIdx){
       const row=b[bIdx]; if(!row){ commuteCard.style.display='none'; return; }
-      const r=toNum(row.radius_m)||1500, cLat=toNum(row.lat), cLng=toNum(row.lng);
+      const r=getPoiRadiusMeters(row, null, 1500), cLat=toNum(row.lat), cLng=toNum(row.lng);
       const center=Cesium.Cartographic.fromDegrees(cLng,cLat);
       const best={};
       p.forEach(poi=>{
         const t=(poi.type||'').toLowerCase();
         if(!COMMUTE.some(k=>t.includes(k))) return;
         const plat=toNum(poi.lat), plng=toNum(poi.lng); if(!Number.isFinite(plat)||!Number.isFinite(plng)) return;
-        const d=metersBetween(center, Cesium.Cartographic.fromDegrees(plng,plat)); if(d>r) return;
+        const poiRadius = getPoiRadiusMeters(row, poi, r);
+        const d=metersBetween(center, Cesium.Cartographic.fromDegrees(plng,plat)); if(d>poiRadius) return;
         const key=COMMUTE.find(k=>t.includes(k))||'other';
         if(!best[key]||d<best[key].dist) best[key]={name:poi.name||'', dist:d};
       });
@@ -2155,7 +2174,7 @@ function fmtMoneyNoDash(n){
       return {
         setMode, refreshCity(idx){
           const row=b[idx]; if(!row) return;
-          const lat=toNum(row.lat), lng=toNum(row.lng), radius=toNum(row.radius_m)||800;
+          const lat=toNum(row.lat), lng=toNum(row.lng), radius=getPoiRadiusMeters(row, null, 800);
           try{ map.setView([lat,lng],15); }catch(e){}
           layerSelected.clearLayers(); layerPois.clearLayers();
           L.circle([lat,lng],{radius,color:'#1976d2',weight:1,fill:false}).addTo(layerSelected);
@@ -2163,7 +2182,8 @@ function fmtMoneyNoDash(n){
           p.forEach(poi=>{
             const plat=toNum(poi.lat), plng=toNum(poi.lng); if(!Number.isFinite(plat)||!Number.isFinite(plng)) return;
             let dist=Infinity; try{ dist=new Cesium.EllipsoidGeodesic(cCarto,Cesium.Cartographic.fromDegrees(plng,plat)).surfaceDistance; }catch(_){ }
-            if(dist>radius) return;
+            const poiRadius = getPoiRadiusMeters(row, poi, radius);
+            if(dist>poiRadius) return;
             const type=(poi.type||'').toLowerCase().trim();
             if(activePoiTypes.size && !activePoiTypes.has(type)) return;
             const m=L.circleMarker([plat,plng],{radius:3,color:'#455a64',weight:1,fillColor:'#455a64',fillOpacity:0.9});
