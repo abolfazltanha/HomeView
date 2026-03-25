@@ -557,6 +557,9 @@ function renderChipSection(section, items){
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <div style="font-weight:700">3D Labels</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <label id="showLabelsInlineWrap" style="display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap">
+          <input id="showLabelsToggle" type="checkbox"><span>Show labels</span>
+        </label>
         <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
       </div>
     </div>
@@ -583,7 +586,7 @@ function renderChipSection(section, items){
       </label>
     </div>`;
   panelBody.appendChild(labelToolsCard);
-  const showLabelsToggle = header.querySelector('#showLabelsHeaderToggle');
+  const showLabelsToggle = labelToolsCard.querySelector('#showLabelsToggle');
   const showFutureProjectsToggle = header.querySelector('#showFutureProjectsToggle');
   const editLabelsBtn = labelToolsCard.querySelector('#editLabelsBtn');
   const labelEditorBody = labelToolsCard.querySelector('#labelEditorBody');
@@ -740,11 +743,15 @@ async function refreshFutureProjects(bIdx){
   // ===== Mouse bindings =====
   const ssc = viewer.scene.screenSpaceCameraController;
   function setExteriorMouseBindings(){
-    ssc.enableRotate=true; ssc.enableTranslate=true; ssc.enableTilt=true; ssc.enableLook=false;
-    ssc.rotateEventTypes=[Cesium.CameraEventType.LEFT_DRAG, Cesium.CameraEventType.RIGHT_DRAG];
-    ssc.translateEventTypes=[Cesium.CameraEventType.MIDDLE_DRAG];
-    ssc.tiltEventTypes=[Cesium.CameraEventType.PINCH, Cesium.CameraEventType.MIDDLE_DRAG];
-    ssc.lookEventTypes=[];
+    ssc.enableRotate = true;
+    ssc.enableTranslate = false;
+    ssc.enableTilt = true;
+    ssc.enableLook = false;
+    ssc.enableZoom = true;
+    ssc.rotateEventTypes = [Cesium.CameraEventType.LEFT_DRAG];
+    ssc.translateEventTypes = [];
+    ssc.tiltEventTypes = [Cesium.CameraEventType.RIGHT_DRAG, Cesium.CameraEventType.PINCH];
+    ssc.lookEventTypes = [];
   }
   function setInteriorMouseBindings(){
     ssc.enableRotate=false; ssc.enableTranslate=false; ssc.enableTilt=false;
@@ -2434,9 +2441,7 @@ function fmtMoneyNoDash(n){
       const usable = !!sel && !sel.isExterior;
       const admin = isEditorAdmin();
 
-      // The header toggle must only appear when the current selection can actually have 3D labels.
-      // On exterior/building view it should be hidden completely so the UI does not show a broken toggle.
-      headerLabelsWrap.style.display = usable ? 'flex' : 'none';
+      headerLabelsWrap.style.display = 'none';
 
       labelToolsCard.style.display = usable ? 'block' : 'none';
       adminUnitEditorCard.style.display = (usable && admin) ? 'block' : 'none';
@@ -2932,9 +2937,9 @@ function hideUnitMetaUI(){
 
         const distance = getExteriorCameraDistance(row, scale, height);
         getBuildingSurfacePosition(lon,lat,height).then(center=>{
-          try{ viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); }catch(_){ }
+          stopCameraTracking();
+          setExteriorMouseBindings();
           viewer.scene.camera.lookAt(center, new Cesium.HeadingPitchRange(heading,pitch,distance));
-          viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
           requestSceneRenderBurst(3);
         });
         const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov=Math.PI/3;
