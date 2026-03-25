@@ -356,11 +356,7 @@ function parseFutureProjects(raw){
   hTitle.style.cssText="font-weight:700;font-size:16px";
   header.appendChild(hTitle);
 
-  const headerLabelsWrap = document.createElement('label');
-  headerLabelsWrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;margin-left:auto;white-space:nowrap";
-  headerLabelsWrap.innerHTML = '<input id="showLabelsHeaderToggle" type="checkbox"><span>Show labels</span>';
-  headerLabelsWrap.style.display = 'none';
-  header.appendChild(headerLabelsWrap);
+  const headerLabelsWrap = null;
 
   const headerFutureWrap = document.createElement('label');
   headerFutureWrap.style.cssText = "display:none;align-items:center;gap:6px;font-size:12px;white-space:nowrap";
@@ -552,7 +548,7 @@ function renderChipSection(section, items){
 
   const labelToolsCard = document.createElement('div');
   labelToolsCard.className = 'ui-card';
-  labelToolsCard.style.cssText = "border-radius:12px;padding:10px;display:none";
+  labelToolsCard.style.cssText = "border-radius:12px;padding:10px;display:none;overflow:hidden";
   labelToolsCard.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <div style="font-weight:700">3D Labels</div>
@@ -563,27 +559,29 @@ function renderChipSection(section, items){
         <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
       </div>
     </div>
-    <div id="labelEditorBody" style="display:none;flex-direction:column;gap:8px;margin-top:10px">
-      <div style="font-size:12px;line-height:1.5;color:#444">Click <b>Pick label position</b>, then click anywhere on the current 3D model to place a text label. Copy the exported string and save it into the sheet column <b>label_annotations</b>.</div>
-      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Label text
-        <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px">
+    <div id="labelEditorBody" style="display:none;flex-direction:column;gap:8px;margin-top:10px;min-width:0">
+      <div style="font-size:12px;line-height:1.5;color:#444">Click <b>Pick label position</b>, then click on the current 3D model to place or move the selected label.</div>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Label text
+        <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0">
       </label>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Raise (m)<input id="labelRaiseInput" class="ui-input" type="number" value="0" step="0.1" style="padding:8px;border-radius:8px"></label>
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Scale<input id="labelScaleInput" class="ui-input" type="number" value="1" step="0.1" style="padding:8px;border-radius:8px"></label>
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Color<input id="labelColorInput" class="ui-input" type="color" value="#00ff88" style="padding:4px;border-radius:8px;height:38px"></label>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Raise (m)<input id="labelRaiseInput" class="ui-input" type="number" value="0" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Scale<input id="labelScaleInput" class="ui-input" type="number" value="1" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+      </div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end">
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Camera distance to labels
+          <input id="labelDistanceRange" class="ui-input" type="range" min="0.5" max="50" step="0.5" value="8" style="width:100%;min-width:0">
+        </label>
+        <div id="labelDistanceValue" style="font-size:12px;font-weight:600;white-space:nowrap;align-self:center">8 m</div>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
         <button id="newLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">New label</button>
         <button id="deleteLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer;border-color:#ffcdd2;color:#b71c1c">Delete selected</button>
-        <button id="copyLabelsBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Copy export string</button>
       </div>
       <div id="labelEditorStatus" style="font-size:12px;color:#555">No label selected</div>
-      <div id="labelList" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto"></div>
-      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Export string
-        <textarea id="labelsExportBox" class="ui-input" rows="5" style="padding:8px;border-radius:8px;resize:vertical"></textarea>
-      </label>
+      <div id="labelList" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto;min-width:0"></div>
+      <textarea id="labelsExportBox" class="ui-input" rows="2" style="display:none"></textarea>
     </div>`;
   panelBody.appendChild(labelToolsCard);
   const showLabelsToggle = labelToolsCard.querySelector('#showLabelsToggle');
@@ -593,13 +591,13 @@ function renderChipSection(section, items){
   const labelTextInput = labelToolsCard.querySelector('#labelTextInput');
   const labelRaiseInput = labelToolsCard.querySelector('#labelRaiseInput');
   const labelScaleInput = labelToolsCard.querySelector('#labelScaleInput');
-  const labelColorInput = labelToolsCard.querySelector('#labelColorInput');
   const pickLabelBtn = labelToolsCard.querySelector('#pickLabelBtn');
   const newLabelBtn = labelToolsCard.querySelector('#newLabelBtn');
   const deleteLabelBtn = labelToolsCard.querySelector('#deleteLabelBtn');
-  const copyLabelsBtn = labelToolsCard.querySelector('#copyLabelsBtn');
   const labelEditorStatus = labelToolsCard.querySelector('#labelEditorStatus');
   const labelList = labelToolsCard.querySelector('#labelList');
+  const labelDistanceRange = labelToolsCard.querySelector('#labelDistanceRange');
+  const labelDistanceValue = labelToolsCard.querySelector('#labelDistanceValue');
   const labelsExportBox = labelToolsCard.querySelector('#labelsExportBox');
 
   // Hide label editing tools by default; only admins can unlock them.
@@ -743,6 +741,7 @@ async function refreshFutureProjects(bIdx){
   // ===== Mouse bindings =====
   const ssc = viewer.scene.screenSpaceCameraController;
   function setExteriorMouseBindings(){
+    viewer.scene.camera.constrainedAxis = Cesium.Cartesian3.UNIT_Z;
     ssc.enableRotate = true;
     ssc.enableTranslate = false;
     ssc.enableTilt = true;
@@ -754,6 +753,7 @@ async function refreshFutureProjects(bIdx){
     ssc.lookEventTypes = [];
   }
   function setInteriorMouseBindings(){
+    viewer.scene.camera.constrainedAxis = undefined;
     ssc.enableRotate=false; ssc.enableTranslate=false; ssc.enableTilt=false;
     ssc.enableLook=true;
     ssc.lookEventTypes=[Cesium.CameraEventType.LEFT_DRAG];
@@ -2355,6 +2355,23 @@ function fmtMoneyNoDash(n){
       const n = Number(v);
       return Number.isFinite(n) && n > 0 ? n : 8;
     }
+    function getSelectionLabelDistanceValue(sel){
+      const meta = (sel && sel.meta) ? sel.meta : {};
+      const n = Number(firstFilled(
+        meta.label_max_view_distance_m,
+        meta.label_view_distance_m,
+        meta.labels_max_view_distance_m,
+        meta.labels_view_distance_m,
+        meta.max_label_distance_m,
+        meta.view_distance_m
+      ));
+      return Number.isFinite(n) && n > 0 ? Math.min(50, Math.max(0.5, n)) : 8;
+    }
+    function updateLabelDistanceUI(sel){
+      const v = getSelectionLabelDistanceValue(sel || labelEditorState.currentSelection);
+      if(labelDistanceRange) labelDistanceRange.value = String(v);
+      if(labelDistanceValue) labelDistanceValue.textContent = v.toFixed(v % 1 ? 1 : 0) + ' m';
+    }
     function getSelectionAnchor(sel){
       if(!sel || sel.isExterior) return null;
       const ent = (interiorEntitiesByBuilding[sel.bIdx]||[])[sel.itemIdx] || null;
@@ -2427,13 +2444,13 @@ function fmtMoneyNoDash(n){
           labelTextInput.value = it.text||'';
           labelRaiseInput.value = Number(it.z||0).toFixed(2).replace(/\.00$/,'');
           labelScaleInput.value = Number(it.scale||1).toFixed(2).replace(/\.00$/,'');
-          labelColorInput.value = it.color||'#00ff88';
           labelEditorStatus.textContent = 'Selected label #' + (idx+1) + ' — position is already stored; click Pick label position to move it.';
           refreshLabelListUI();
         };
         labelList.appendChild(btn);
       });
       if(!items.length) labelList.innerHTML='<div style="font-size:12px;color:#666">No labels yet for this item.</div>';
+      updateLabelDistanceUI(labelEditorState.currentSelection);
       renderSelectionLabels();
     }
     function syncLabelToolsVisibility(){
@@ -2441,7 +2458,7 @@ function fmtMoneyNoDash(n){
       const usable = !!sel && !sel.isExterior;
       const admin = isEditorAdmin();
 
-      headerLabelsWrap.style.display = 'none';
+      if(headerLabelsWrap) headerLabelsWrap.style.display = 'none';
 
       labelToolsCard.style.display = usable ? 'block' : 'none';
       adminUnitEditorCard.style.display = (usable && admin) ? 'block' : 'none';
@@ -2472,6 +2489,16 @@ function fmtMoneyNoDash(n){
     }
     showLabelsToggle.checked = false;
     showLabelsToggle.addEventListener('change', function(){ renderSelectionLabels(); });
+    labelDistanceRange.addEventListener('input', function(){
+      const sel = labelEditorState.currentSelection;
+      const v = Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8));
+      labelDistanceValue.textContent = v.toFixed(v % 1 ? 1 : 0) + ' m';
+      if(sel && sel.meta){
+        sel.meta.label_max_view_distance_m = String(v);
+        sel.meta.label_view_distance_m = String(v);
+      }
+      renderSelectionLabels();
+    });
     showFutureProjectsToggle.checked = false;
     showFutureProjectsToggle.addEventListener('change', async function(){
       if(futureProjectsChipBtn) futureProjectsChipBtn.dataset.enabled = showFutureProjectsToggle.checked ? '1' : '0';
@@ -2498,7 +2525,6 @@ function fmtMoneyNoDash(n){
       labelTextInput.value = '';
       labelRaiseInput.value = '0';
       labelScaleInput.value = '1';
-      labelColorInput.value = '#00ff88';
       labelEditorStatus.textContent = 'New label ready — click Pick label position.';
       refreshLabelListUI();
     };
@@ -2511,10 +2537,6 @@ function fmtMoneyNoDash(n){
       setCurrentSelectionLabels(items);
       labelEditorStatus.textContent = 'Selected label deleted.';
       refreshLabelListUI();
-    };
-    copyLabelsBtn.onclick = async function(){
-      labelsExportBox.value = formatLabelAnnotations(getCurrentSelectionLabels());
-      try{ await navigator.clipboard.writeText(labelsExportBox.value); labelEditorStatus.textContent='Export string copied. Paste it into label_annotations.'; }catch(_){ labelEditorStatus.textContent='Export string ready below. Copy it manually if needed.'; }
     };
     pickLabelBtn.onclick = function(){
       if(!labelEditorState.currentSelection || labelEditorState.currentSelection.isExterior) return;
@@ -2577,13 +2599,13 @@ function fmtMoneyNoDash(n){
         y: Number(local.y)||0,
         z: (Number(local.z)||0) + (Number(labelRaiseInput.value)||0),
         scale: Number(labelScaleInput.value)>0 ? Number(labelScaleInput.value) : 1,
-        color: labelColorInput.value || '#00ff88'
+        color: '#00ff88'
       };
       if(idx>=0 && idx<items.length){ items[idx] = item; }
       else { items.push(item); labelEditorState.selectedLabelIndex = items.length-1; }
       setCurrentSelectionLabels(items);
       labelEditorState.pendingPick = false;
-      labelEditorStatus.textContent = 'Label saved for current item. Copy the export string when ready.';
+      labelEditorStatus.textContent = 'Label saved for current item.';
       refreshLabelListUI();
       requestSceneRenderBurst(3);
       return true;
@@ -2653,7 +2675,9 @@ building_key: buildingKey,
       structures: adminStructuresInput.value.trim(),
       heating_type: adminHeatingInput.value.trim(),
       community_features: adminCommunityInput.value.trim(),
-      label_annotations: labelsExportBox.value.trim()
+      label_annotations: labelsExportBox.value.trim(),
+      label_max_view_distance_m: String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8))),
+      label_view_distance_m: String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8)))
     }
   };
 }
@@ -2720,6 +2744,9 @@ adminApplyBtn.onclick = function(){
   meta.structures = adminStructuresInput.value.trim();
   meta.heating_type = adminHeatingInput.value.trim();
   meta.community_features = adminCommunityInput.value.trim();
+  meta.label_annotations = labelsExportBox.value.trim();
+  meta.label_max_view_distance_m = String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8)));
+  meta.label_view_distance_m = meta.label_max_view_distance_m;
   adminEditorStatus.textContent = 'Changes applied locally. Press Save changes to persist them.';
   updateView(Number(selectBox.value));
 };
@@ -2939,7 +2966,8 @@ function hideUnitMetaUI(){
         getBuildingSurfacePosition(lon,lat,height).then(center=>{
           stopCameraTracking();
           setExteriorMouseBindings();
-          viewer.scene.camera.lookAt(center, new Cesium.HeadingPitchRange(heading,pitch,distance));
+          const orbitFrame = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+          viewer.scene.camera.lookAtTransform(orbitFrame, new Cesium.HeadingPitchRange(heading,pitch,distance));
           requestSceneRenderBurst(3);
         });
         const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov=Math.PI/3;
