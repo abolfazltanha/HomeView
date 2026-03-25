@@ -556,10 +556,6 @@ function renderChipSection(section, items){
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <div style="font-weight:700">3D Labels</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px">
-          <input id="showLabelsToggle" type="checkbox">
-          <span>Show labels</span>
-        </label>
         <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
       </div>
     </div>
@@ -2404,22 +2400,55 @@ function fmtMoneyNoDash(n){
     pickLabelBtn.onclick = function(){
       if(!labelEditorState.currentSelection || labelEditorState.currentSelection.isExterior) return;
       labelEditorState.pendingPick = true;
-      labelEditorStatus.textContent = 'Now click on the 3D model to place the label.';
+      labelEditorStatus.textContent = 'Now click directly on the current interior surface to place the label.';
     };
+    function getActiveInteriorHandleForLabelPlacement(){
+      if(!activeInteriorSelection) return null;
+      const arr = interiorEntitiesByBuilding[activeInteriorSelection.bIdx] || [];
+      return arr[activeInteriorSelection.itemIdx] || null;
+    }
+    function isPickedFromActiveInterior(picked, handle){
+      if(!picked || !handle || !handle.modelPrimitive) return false;
+      if(picked.primitive === handle.modelPrimitive) return true;
+      const detail = picked.detail || picked.content || null;
+      if(detail){
+        if(detail.model === handle.modelPrimitive) return true;
+        if(detail.primitive === handle.modelPrimitive) return true;
+        if(detail.pickPrimitive === handle.modelPrimitive) return true;
+      }
+      if(picked.id && handle.anchorEntity && picked.id === handle.anchorEntity) return true;
+      return false;
+    }
     function handleLabelPlacement(screenPos){
       if(!labelEditorState.pendingPick) return false;
       const sel = labelEditorState.currentSelection;
       if(!sel || sel.isExterior) return false;
-      let world = null;
-      try{ if(viewer.scene.pickPositionSupported) world = viewer.scene.pickPosition(screenPos); }catch(_){ }
-      if(!world){
-        try{
-          const ray = viewer.camera.getPickRay(screenPos);
-          world = viewer.scene.globe.pick(ray, viewer.scene);
-        }catch(_){ }
+      const activeHandle = getActiveInteriorHandleForLabelPlacement();
+      if(!activeHandle || !activeHandle.modelPrimitive){
+        labelEditorStatus.textContent = 'Current interior model is not ready for label placement yet.';
+        return true;
       }
-      if(!world) return true;
-      const anchor = getSelectionAnchor(sel); if(!anchor) return true;
+      const scene = viewer.scene;
+      const picked = scene.pick(screenPos);
+      if(!isPickedFromActiveInterior(picked, activeHandle)){
+        labelEditorStatus.textContent = 'Click directly on the current interior model, not outside surfaces.';
+        return true;
+      }
+      if(!scene.pickPositionSupported){
+        labelEditorStatus.textContent = 'This browser does not support precise 3D label placement.';
+        return true;
+      }
+      let world = null;
+      try{ world = scene.pickPosition(screenPos); }catch(_){ }
+      if(!Cesium.defined(world)){
+        labelEditorStatus.textContent = 'Could not read that surface position. Try another point on the interior model.';
+        return true;
+      }
+      const anchor = getSelectionAnchor(sel);
+      if(!anchor){
+        labelEditorStatus.textContent = 'Could not resolve the local anchor for this item.';
+        return true;
+      }
       const local = Cesium.Matrix4.multiplyByPoint(anchor.inv, world, new Cesium.Cartesian3());
       const items = getCurrentSelectionLabels().slice();
       const idx = labelEditorState.selectedLabelIndex;
@@ -2437,6 +2466,7 @@ function fmtMoneyNoDash(n){
       labelEditorState.pendingPick = false;
       labelEditorStatus.textContent = 'Label saved for current item. Copy the export string when ready.';
       refreshLabelListUI();
+      requestSceneRenderBurst(3);
       return true;
     }
 
@@ -2948,7 +2978,7 @@ function hideUnitMetaUI(){
       shadows:Cesium.ShadowMode.DISABLED,
       incrementallyLoadTextures:false,
       asynchronous:true,
-      allowPicking:false,
+      allowPicking:true,
       gltfCallback:function(gltf){
         hvRawGltf = gltf;
         try{ const fn=(typeof applyFinishSelectionsToRawGltf==='function'?applyFinishSelectionsToRawGltf:(globalThis&&typeof globalThis.applyFinishSelectionsToRawGltf==='function'?globalThis.applyFinishSelectionsToRawGltf:null)); if(fn) fn(gltf, finishSelections || null); else console.warn('Raw glTF finish patch skipped: applyFinishSelectionsToRawGltf not available'); }catch(err){ console.warn('Raw glTF finish patch failed:', err); }
