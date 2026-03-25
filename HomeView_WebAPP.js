@@ -559,22 +559,22 @@ function renderChipSection(section, items){
         <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
       </div>
     </div>
+    <div id="labelDistanceWrap" style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px;min-width:0">
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Camera distance to labels
+        <input id="labelDistanceRange" class="ui-input" type="range" min="0.5" max="50" step="0.5" value="8" style="width:100%;min-width:0;box-sizing:border-box">
+      </label>
+      <div id="labelDistanceValue" style="font-size:12px;font-weight:600;white-space:nowrap;align-self:center">8 m</div>
+    </div>
     <div id="labelEditorBody" style="display:none;flex-direction:column;gap:8px;margin-top:10px;min-width:0">
       <div style="font-size:12px;line-height:1.5;color:#444">Click <b>Pick label position</b>, then click on the current 3D model to place or move the selected label.</div>
       <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Label text
         <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0">
       </label>
-      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px">
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;min-width:0">
         <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Raise (m)<input id="labelRaiseInput" class="ui-input" type="number" value="0" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
         <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Scale<input id="labelScaleInput" class="ui-input" type="number" value="1" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
       </div>
-      <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end">
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Camera distance to labels
-          <input id="labelDistanceRange" class="ui-input" type="range" min="0.5" max="50" step="0.5" value="8" style="width:100%;min-width:0">
-        </label>
-        <div id="labelDistanceValue" style="font-size:12px;font-weight:600;white-space:nowrap;align-self:center">8 m</div>
-      </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;min-width:0">
         <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
         <button id="newLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">New label</button>
         <button id="deleteLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer;border-color:#ffcdd2;color:#b71c1c">Delete selected</button>
