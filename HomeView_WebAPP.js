@@ -356,8 +356,13 @@ function parseFutureProjects(raw){
   hTitle.style.cssText="font-weight:700;font-size:16px";
   header.appendChild(hTitle);
 
+  const headerLabelsWrap = document.createElement('label');
+  headerLabelsWrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;margin-left:auto;white-space:nowrap";
+  headerLabelsWrap.innerHTML = '<input id="showLabelsHeaderToggle" type="checkbox"><span>Show labels</span>';
+  header.appendChild(headerLabelsWrap);
+
   const headerFutureWrap = document.createElement('label');
-  headerFutureWrap.style.cssText = "display:none;align-items:center;gap:6px;font-size:12px;margin-left:auto;white-space:nowrap";
+  headerFutureWrap.style.cssText = "display:none;align-items:center;gap:6px;font-size:12px;white-space:nowrap";
   headerFutureWrap.innerHTML = '<input id="showFutureProjectsToggle" type="checkbox"><span>Show future</span>';
   header.appendChild(headerFutureWrap);
 
@@ -550,24 +555,19 @@ function renderChipSection(section, items){
   labelToolsCard.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <div style="font-weight:700">3D Labels</div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap"><input id="showLabelsToggle" type="checkbox"><span>Show labels</span></label>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
       </div>
     </div>
-    <div style="margin-top:8px">
-      <label style="display:block;font-size:12px;margin-bottom:4px">Label view distance: <span id="labelViewDistanceValue"></span> m</label>
-      <input id="labelViewDistanceRange" class="ui-input" type="range" min="0.5" max="50" step="0.5" style="width:100%">
-    </div>
     <div id="labelEditorBody" style="display:none;flex-direction:column;gap:8px;margin-top:10px">
       <div style="font-size:12px;line-height:1.5;color:#444">Click <b>Pick label position</b>, then click anywhere on the current 3D model to place a text label. Copy the exported string and save it into the sheet column <b>label_annotations</b>.</div>
-      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Label text
-        <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0">
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Label text
+        <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px">
       </label>
-      <div style="display:grid;grid-template-columns:minmax(0,1fr) 96px 72px;gap:8px;align-items:end">
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Raise (m)<input id="labelRaiseInput" class="ui-input" type="number" value="0" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Scale<input id="labelScaleInput" class="ui-input" type="number" value="1" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Color<input id="labelColorInput" class="ui-input" type="color" value="#00ff88" style="padding:3px;border-radius:8px;height:38px;box-sizing:border-box;width:100%;min-width:0"></label>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Raise (m)<input id="labelRaiseInput" class="ui-input" type="number" value="0" step="0.1" style="padding:8px;border-radius:8px"></label>
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Scale<input id="labelScaleInput" class="ui-input" type="number" value="1" step="0.1" style="padding:8px;border-radius:8px"></label>
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Color<input id="labelColorInput" class="ui-input" type="color" value="#00ff88" style="padding:4px;border-radius:8px;height:38px"></label>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
@@ -577,12 +577,12 @@ function renderChipSection(section, items){
       </div>
       <div id="labelEditorStatus" style="font-size:12px;color:#555">No label selected</div>
       <div id="labelList" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto"></div>
-      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Export string
-        <textarea id="labelsExportBox" class="ui-input" rows="5" style="padding:8px;border-radius:8px;resize:vertical;box-sizing:border-box;width:100%;min-width:0"></textarea>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Export string
+        <textarea id="labelsExportBox" class="ui-input" rows="5" style="padding:8px;border-radius:8px;resize:vertical"></textarea>
       </label>
     </div>`;
   panelBody.appendChild(labelToolsCard);
-  const showLabelsToggle = labelToolsCard.querySelector('#showLabelsToggle');
+  const showLabelsToggle = header.querySelector('#showLabelsHeaderToggle');
   const showFutureProjectsToggle = header.querySelector('#showFutureProjectsToggle');
   const editLabelsBtn = labelToolsCard.querySelector('#editLabelsBtn');
   const labelEditorBody = labelToolsCard.querySelector('#labelEditorBody');
@@ -597,36 +597,10 @@ function renderChipSection(section, items){
   const labelEditorStatus = labelToolsCard.querySelector('#labelEditorStatus');
   const labelList = labelToolsCard.querySelector('#labelList');
   const labelsExportBox = labelToolsCard.querySelector('#labelsExportBox');
-  const labelViewDistanceRange = labelToolsCard.querySelector('#labelViewDistanceRange');
-  const labelViewDistanceValue = labelToolsCard.querySelector('#labelViewDistanceValue');
 
   // Hide label editing tools by default; only admins can unlock them.
   editLabelsBtn.style.display = 'none';
   labelEditorBody.style.display = 'none';
-
-  let globalLabelViewDistanceM = Number(localStorage.getItem('ui.labelViewDistanceM') || 11);
-  if(!Number.isFinite(globalLabelViewDistanceM) || globalLabelViewDistanceM <= 0) globalLabelViewDistanceM = 11;
-  globalLabelViewDistanceM = Math.max(0.5, Math.min(50, globalLabelViewDistanceM));
-  function formatLabelDistanceValue(v){
-    const n = Number(v);
-    if(!Number.isFinite(n)) return '11';
-    return Math.abs(n - Math.round(n)) < 1e-6 ? String(Math.round(n)) : n.toFixed(1);
-  }
-  labelViewDistanceRange.value = String(globalLabelViewDistanceM);
-  labelViewDistanceValue.textContent = formatLabelDistanceValue(globalLabelViewDistanceM);
-  function setGlobalLabelViewDistance(v, persist){
-    const n = Math.max(0.5, Math.min(50, Number(v)||11));
-    globalLabelViewDistanceM = n;
-    labelViewDistanceRange.value = String(n);
-    labelViewDistanceValue.textContent = formatLabelDistanceValue(n);
-    if(persist){ try{ localStorage.setItem('ui.labelViewDistanceM', String(n)); }catch(_){} }
-    const rerender = (typeof globalThis !== 'undefined' && typeof globalThis.renderSelectionLabels === 'function')
-      ? globalThis.renderSelectionLabels
-      : null;
-    if(rerender) rerender();
-  }
-  labelViewDistanceRange.addEventListener('input', function(){ setGlobalLabelViewDistance(this.value, false); });
-  labelViewDistanceRange.addEventListener('change', function(){ setGlobalLabelViewDistance(this.value, true); });
 
 
 const futureProjectEntitiesByBuilding = [];
@@ -1046,9 +1020,14 @@ async function refreshFutureProjects(bIdx){
 
     // POI chips
     let hiddenPoiTypes = new Set();
-    let futureProjectsEnabled = false;
     let futureProjectsChipBtn = null;
+    const poiTypesByBuilding = [];
+    const hasFutureProjectsByBuilding = [];
 
+    function hasFutureProjectsForBuilding(row){
+      const raw = firstFilled(row && row.future_projects, row && row.futureprojects);
+      return parseFutureProjects(raw).length > 0;
+    }
     function getPoiEntityType(ent){
       try{
         const p = ent && ent.properties;
@@ -1058,24 +1037,21 @@ async function refreshFutureProjects(bIdx){
         return '';
       }
     }
-
     function stylePoiChip(btn, hidden){
       btn.style.opacity = hidden ? "0.6" : "1";
       btn.style.background = hidden ? "#fff" : "#eef2ff";
     }
-
     function syncFutureProjectsChip(){
-      if(showFutureProjectsToggle) showFutureProjectsToggle.checked = !!futureProjectsEnabled;
+      if(showFutureProjectsToggle) showFutureProjectsToggle.checked = !!(futureProjectsChipBtn && futureProjectsChipBtn.dataset.enabled === '1');
       if(!futureProjectsChipBtn) return;
-      stylePoiChip(futureProjectsChipBtn, !futureProjectsEnabled);
+      stylePoiChip(futureProjectsChipBtn, futureProjectsChipBtn.dataset.enabled !== '1');
     }
-
     function applyPoiTypeFilters(idx){
       const activeIdx = Number.isFinite(Number(idx)) ? Number(idx) : Number(selectBox && selectBox.value || 0);
       const isExterior = !!(viewSelect && viewSelect.value === 'exterior');
-      poiSources.forEach((ds, i) => {
-        const baseShow = isExterior && i === activeIdx;
-        ds.entities.values.forEach(ent => {
+      poiSources.forEach((ds,i)=>{
+        const baseShow = isExterior && i===activeIdx;
+        ds.entities.values.forEach(ent=>{
           const type = getPoiEntityType(ent);
           const allowed = !hiddenPoiTypes.has(type);
           ent.show = !!(baseShow && allowed);
@@ -1083,35 +1059,52 @@ async function refreshFutureProjects(bIdx){
       });
       requestSceneRender();
     }
-
-    function rebuildChips(typeSet){
+    function rebuildChipsForBuilding(idx){
       filterRow.innerHTML = '';
+      const types = Array.from(poiTypesByBuilding[idx] || []).sort();
 
-      futureProjectsChipBtn = document.createElement('button');
-      futureProjectsChipBtn.className = 'ui-btn';
-      futureProjectsChipBtn.textContent = 'Future projects';
-      futureProjectsChipBtn.style.cssText = "padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px";
-      futureProjectsChipBtn.onclick = async () => {
-        futureProjectsEnabled = !futureProjectsEnabled;
+      if(hasFutureProjectsByBuilding[idx]){
+        futureProjectsChipBtn = document.createElement('button');
+        futureProjectsChipBtn.className='ui-btn';
+        futureProjectsChipBtn.textContent='Future projects';
+        futureProjectsChipBtn.dataset.enabled = (showFutureProjectsToggle && showFutureProjectsToggle.checked) ? '1' : '0';
+        futureProjectsChipBtn.style.cssText="padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px";
+        futureProjectsChipBtn.onclick = async ()=>{
+          const enabled = futureProjectsChipBtn.dataset.enabled === '1';
+          futureProjectsChipBtn.dataset.enabled = enabled ? '0' : '1';
+          if(showFutureProjectsToggle) showFutureProjectsToggle.checked = !enabled;
+          syncFutureProjectsChip();
+          if(enabled){
+            clearAllFutureProjectEntities();
+          }else{
+            await refreshFutureProjects(Number(selectBox.value || 0));
+          }
+        };
+        filterRow.appendChild(futureProjectsChipBtn);
         syncFutureProjectsChip();
-        if(!futureProjectsEnabled){
-          clearAllFutureProjectEntities();
-          return;
+      } else {
+        futureProjectsChipBtn = null;
+        if(showFutureProjectsToggle) showFutureProjectsToggle.checked = false;
+        clearAllFutureProjectEntities();
+      }
+
+      if(types.length===0){
+        if(!hasFutureProjectsByBuilding[idx]){
+          const d=document.createElement('div');
+          d.style.cssText="font-size:12px;opacity:.7";
+          d.textContent='No POI types';
+          filterRow.appendChild(d);
         }
-        await refreshFutureProjects(Number(selectBox.value || 0));
-      };
-      filterRow.appendChild(futureProjectsChipBtn);
-      syncFutureProjectsChip();
+        return;
+      }
 
-      if(typeSet.size === 0) return;
-
-      typeSet.forEach(tn => {
-        const btn = document.createElement('button');
-        btn.className = 'ui-btn';
-        btn.textContent = tn;
-        btn.style.cssText = "padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px";
+      types.forEach(tn=>{
+        const btn=document.createElement('button');
+        btn.className='ui-btn';
+        btn.textContent=tn;
+        btn.style.cssText="padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px";
         stylePoiChip(btn, hiddenPoiTypes.has(tn));
-        btn.onclick = () => {
+        btn.onclick=()=>{
           if(hiddenPoiTypes.has(tn)) hiddenPoiTypes.delete(tn);
           else hiddenPoiTypes.add(tn);
           stylePoiChip(btn, hiddenPoiTypes.has(tn));
@@ -1136,13 +1129,13 @@ async function refreshFutureProjects(bIdx){
         poiRow && poiRow.max_distance,
         poiRow && poiRow.distance_m
       ));
-      if (Number.isFinite(poiRadius) && poiRadius > 0) return poiRadius;
+      if(Number.isFinite(poiRadius) && poiRadius > 0) return poiRadius;
       const buildingRadius = toNum(firstFilled(
         buildingRow && buildingRow.radius_m,
         buildingRow && buildingRow.poi_radius,
         buildingRow && buildingRow.radius
       ));
-      if (Number.isFinite(buildingRadius) && buildingRadius > 0) return buildingRadius;
+      if(Number.isFinite(buildingRadius) && buildingRadius > 0) return buildingRadius;
       return Number.isFinite(fallback) && fallback > 0 ? fallback : 800;
     }
 
@@ -1156,6 +1149,7 @@ async function refreshFutureProjects(bIdx){
       const center=Cesium.Cartographic.fromDegrees(cLng,cLat);
       const candidates = listKey.length>0 ? listKey : p;
       const types=new Set();
+      hasFutureProjectsByBuilding[i] = hasFutureProjectsForBuilding(br);
 
       candidates.forEach(poi=>{
         const plat=toNum(poi.lat), plng=toNum(poi.lng); if(!Number.isFinite(plat)||!Number.isFinite(plng)) return;
@@ -1173,7 +1167,8 @@ async function refreshFutureProjects(bIdx){
         types.add(type||'other');
       });
 
-      if(i===0){ hiddenPoiTypes = new Set(); rebuildChips(types); }
+      poiTypesByBuilding[i] = types;
+      if(i===0){ hiddenPoiTypes = new Set(); rebuildChipsForBuilding(0); }
       clampDataSourceToSurface(ds);
     });
 
@@ -2350,8 +2345,7 @@ function fmtMoneyNoDash(n){
         meta.view_distance_m
       );
       const n = Number(v);
-      const sheetDistance = Number.isFinite(n) && n > 0 ? n : 40;
-      return Math.max(0.5, Math.min(50, globalLabelViewDistanceM || sheetDistance || 11));
+      return Number.isFinite(n) && n > 0 ? n : 8;
     }
     function getSelectionAnchor(sel){
       if(!sel || sel.isExterior) return null;
@@ -2410,7 +2404,6 @@ function fmtMoneyNoDash(n){
         labelEditorState.entities.push(e);
       });
     }
-    if (typeof globalThis !== 'undefined') globalThis.renderSelectionLabels = renderSelectionLabels;
     function refreshLabelListUI(){
       const items = getCurrentSelectionLabels();
       labelsExportBox.value = formatLabelAnnotations(items);
@@ -2451,12 +2444,6 @@ function fmtMoneyNoDash(n){
         return;
       }
 
-      const sheetDistance = Number(getLabelMaxViewDistanceM(sel));
-      if(Number.isFinite(sheetDistance) && sheetDistance > 0){
-        labelViewDistanceRange.value = String(Math.max(0.5, Math.min(50, globalLabelViewDistanceM || sheetDistance)));
-        labelViewDistanceValue.textContent = formatLabelDistanceValue(labelViewDistanceRange.value);
-      }
-
       editLabelsBtn.style.display = admin ? 'inline-flex' : 'none';
 
       if(!admin){
@@ -2475,12 +2462,10 @@ function fmtMoneyNoDash(n){
     showLabelsToggle.checked = false;
     showLabelsToggle.addEventListener('change', function(){ renderSelectionLabels(); });
     showFutureProjectsToggle.checked = false;
-    futureProjectsEnabled = false;
-    syncFutureProjectsChip();
     showFutureProjectsToggle.addEventListener('change', async function(){
-      futureProjectsEnabled = !!showFutureProjectsToggle.checked;
+      if(futureProjectsChipBtn) futureProjectsChipBtn.dataset.enabled = showFutureProjectsToggle.checked ? '1' : '0';
       syncFutureProjectsChip();
-      if(!futureProjectsEnabled){
+      if(!showFutureProjectsToggle.checked){
         clearAllFutureProjectEntities();
         return;
       }
@@ -2748,7 +2733,7 @@ adminApplyBtn.onclick = function(){
     viewer.camera.changed.addEventListener(()=>{ tip.style.display='none'; });
 
     function refreshPoisForSelection(){
-      const idx = Number(selectBox.value);
+      const idx=Number(selectBox.value);
       applyPoiTypeFilters(idx);
     }
 
@@ -2783,18 +2768,29 @@ adminApplyBtn.onclick = function(){
 
     selectBox.addEventListener('change', async ()=>{
       const idx = Number(selectBox.value);
+      hiddenPoiTypes = new Set();
+      rebuildChipsForBuilding(idx);
       rebuildViewOptions(idx);
       scheduleViewUpdate();
       applyPoiTypeFilters(idx);
-      if(futureProjectsEnabled) await refreshFutureProjects(idx);
-      else clearAllFutureProjectEntities();
+      if(showFutureProjectsToggle && showFutureProjectsToggle.checked && hasFutureProjectsByBuilding[idx]){
+        await refreshFutureProjects(idx);
+      }else{
+        if(showFutureProjectsToggle) showFutureProjectsToggle.checked = false;
+        clearAllFutureProjectEntities();
+        syncFutureProjectsChip();
+      }
     });
     viewSelect.addEventListener('change', async ()=>{
       const idx = Number(selectBox.value);
-      scheduleViewUpdate();
       applyPoiTypeFilters(idx);
-      if(futureProjectsEnabled) await refreshFutureProjects(idx);
-      else clearAllFutureProjectEntities();
+      if(showFutureProjectsToggle && showFutureProjectsToggle.checked && hasFutureProjectsByBuilding[idx]){
+        await refreshFutureProjects(idx);
+      }else{
+        clearAllFutureProjectEntities();
+        syncFutureProjectsChip();
+      }
+      scheduleViewUpdate();
     });
 
 
@@ -2895,26 +2891,19 @@ function hideUnitMetaUI(){
         priceCard.style.display='none';
         commuteCard.style.display='none';
         refreshPoisForSelection();
-        if(futureProjectsEnabled) refreshFutureProjects(idx); else clearAllFutureProjectEntities();
+        if(showFutureProjectsToggle && showFutureProjectsToggle.checked && hasFutureProjectsByBuilding[idx]) refreshFutureProjects(idx); else clearAllFutureProjectEntities();
         return;
       }
 
       refreshPoisForSelection();
-      if(futureProjectsEnabled) refreshFutureProjects(idx); else clearAllFutureProjectEntities();
+      if(showFutureProjectsToggle && showFutureProjectsToggle.checked && hasFutureProjectsByBuilding[idx]) refreshFutureProjects(idx); else clearAllFutureProjectEntities();
 
       if(isExterior){
         setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
         const lon=toNum(row.lng), lat=toNum(row.lat);
         const height=toNum(row.height)||20, scale=toNum(row.scale)||10;
         const heading=Cesium.Math.toRadians(toNum(row.heading)||0), pitch=Cesium.Math.toRadians(-30);
-        let distance = parseFirstNumber(firstFilled(
-          row.building_camera_distance,
-          row.exterior_camera_distance,
-          row.camera_distance_building,
-          row.camera_distance_exterior,
-          row.camera_distance
-        )) || (scale>0? scale*25 : (toNum(row.height)||10)*10);
-        if(distance<60) distance=60;
+        let distance = (scale>0? scale*25 : (toNum(row.height)||10)*10); if(distance<60) distance=60;
         getBuildingSurfacePosition(lon,lat,height).then(center=>{
           viewer.scene.camera.lookAt(center, new Cesium.HeadingPitchRange(heading,pitch,distance));
           requestSceneRender();
