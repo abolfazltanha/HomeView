@@ -356,6 +356,11 @@ function parseFutureProjects(raw){
   hTitle.style.cssText="font-weight:700;font-size:16px";
   header.appendChild(hTitle);
 
+  const headerFutureWrap = document.createElement('label');
+  headerFutureWrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;margin-left:auto;white-space:nowrap";
+  headerFutureWrap.innerHTML = '<input id="showFutureProjectsToggle" type="checkbox"><span>Show future</span>';
+  header.appendChild(headerFutureWrap);
+
   const collapseBtn = document.createElement('button');
   collapseBtn.type = "button";
   collapseBtn.textContent='▾';
@@ -547,7 +552,6 @@ function renderChipSection(section, items){
       <div style="font-weight:700">3D Labels</div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap"><input id="showLabelsToggle" type="checkbox"><span>Show labels</span></label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap"><input id="showFutureProjectsToggle" type="checkbox"><span>Show future</span></label>
         <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
       </div>
     </div>
@@ -579,7 +583,7 @@ function renderChipSection(section, items){
     </div>`;
   panelBody.appendChild(labelToolsCard);
   const showLabelsToggle = labelToolsCard.querySelector('#showLabelsToggle');
-  const showFutureProjectsToggle = labelToolsCard.querySelector('#showFutureProjectsToggle');
+  const showFutureProjectsToggle = header.querySelector('#showFutureProjectsToggle');
   const editLabelsBtn = labelToolsCard.querySelector('#editLabelsBtn');
   const labelEditorBody = labelToolsCard.querySelector('#labelEditorBody');
   const labelTextInput = labelToolsCard.querySelector('#labelTextInput');
