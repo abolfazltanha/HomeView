@@ -570,9 +570,10 @@ function renderChipSection(section, items){
       <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Label text
         <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0">
       </label>
-      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;min-width:0">
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:8px;min-width:0">
         <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Raise (m)<input id="labelRaiseInput" class="ui-input" type="number" value="0" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
         <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Scale<input id="labelScaleInput" class="ui-input" type="number" value="1" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Label color<input id="labelColorInput" class="ui-input" type="color" value="#00ff88" style="padding:4px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0;height:38px"></label>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;min-width:0">
         <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
@@ -591,6 +592,7 @@ function renderChipSection(section, items){
   const labelTextInput = labelToolsCard.querySelector('#labelTextInput');
   const labelRaiseInput = labelToolsCard.querySelector('#labelRaiseInput');
   const labelScaleInput = labelToolsCard.querySelector('#labelScaleInput');
+  const labelColorInput = labelToolsCard.querySelector('#labelColorInput');
   const pickLabelBtn = labelToolsCard.querySelector('#pickLabelBtn');
   const newLabelBtn = labelToolsCard.querySelector('#newLabelBtn');
   const deleteLabelBtn = labelToolsCard.querySelector('#deleteLabelBtn');
@@ -2316,6 +2318,10 @@ function fmtMoneyNoDash(n){
         return [String(it.text||'Label').replace(/[;|]/g,' ').trim(), [x,y,z].join(','), sc, it.color||'#00ff88'].join('|');
       }).join('; ');
     }
+    function normalizeLabelColor(v){
+      const s = String(v || '').trim();
+      return /^#[0-9a-fA-F]{6}$/.test(s) ? s : '#00ff88';
+    }
     function getCurrentSelectionLabels(){
       const key = getSelectionKey(labelEditorState.currentSelection);
       if(!key) return [];
@@ -2438,12 +2444,13 @@ function fmtMoneyNoDash(n){
         btn.className='ui-btn';
         btn.style.cssText='text-align:left;border-radius:10px;padding:8px;cursor:pointer';
         if(idx===labelEditorState.selectedLabelIndex) btn.style.background='#eef6ff';
-        btn.innerHTML = '<div style="font-weight:600">'+(it.text||('Label '+(idx+1)))+'</div><div style="font-size:12px;opacity:.8">x '+Number(it.x).toFixed(2)+' • y '+Number(it.y).toFixed(2)+' • z '+Number(it.z).toFixed(2)+' • scale '+Number(it.scale||1).toFixed(2)+'</div>';
+        btn.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div style="font-weight:600">'+(it.text||('Label '+(idx+1)))+'</div><div style="width:14px;height:14px;border-radius:999px;border:1px solid #bbb;flex:0 0 auto;background:'+(it.color||'#00ff88')+'"></div></div><div style="font-size:12px;opacity:.8">x '+Number(it.x).toFixed(2)+' • y '+Number(it.y).toFixed(2)+' • z '+Number(it.z).toFixed(2)+' • scale '+Number(it.scale||1).toFixed(2)+'</div>';
         btn.onclick=function(){
           labelEditorState.selectedLabelIndex = idx;
           labelTextInput.value = it.text||'';
           labelRaiseInput.value = Number(it.z||0).toFixed(2).replace(/\.00$/,'');
           labelScaleInput.value = Number(it.scale||1).toFixed(2).replace(/\.00$/,'');
+          if(labelColorInput) labelColorInput.value = normalizeLabelColor(it.color || '#00ff88');
           labelEditorStatus.textContent = 'Selected label #' + (idx+1) + ' — position is already stored; click Pick label position to move it.';
           refreshLabelListUI();
         };
@@ -2525,6 +2532,7 @@ function fmtMoneyNoDash(n){
       labelTextInput.value = '';
       labelRaiseInput.value = '0';
       labelScaleInput.value = '1';
+      if(labelColorInput) labelColorInput.value = '#00ff88';
       labelEditorStatus.textContent = 'New label ready — click Pick label position.';
       refreshLabelListUI();
     };
@@ -2599,7 +2607,7 @@ function fmtMoneyNoDash(n){
         y: Number(local.y)||0,
         z: (Number(local.z)||0) + (Number(labelRaiseInput.value)||0),
         scale: Number(labelScaleInput.value)>0 ? Number(labelScaleInput.value) : 1,
-        color: '#00ff88'
+        color: normalizeLabelColor(labelColorInput && labelColorInput.value)
       };
       if(idx>=0 && idx<items.length){ items[idx] = item; }
       else { items.push(item); labelEditorState.selectedLabelIndex = items.length-1; }
@@ -2649,35 +2657,73 @@ function buildEditorSavePayload(){
   if(!sel || sel.isExterior || !sel.meta) return null;
 
   const meta = sel.meta || {};
-  const buildingKey = firstFilled(meta.building_key, sel.row && sel.row.name, sel.row && sel.row.building_key);
-  const unitName = firstFilled(meta.unit_name, meta.name, meta.title);
+  const row = sel.row || {};
+  const buildingKey = firstFilled(meta.building_key, meta.parent, row.building_key, row.name, row.title);
+  const unitName = firstFilled(meta.unit_name, meta.name, meta.title, meta.unit, meta.unit_number);
+  const labelString = formatLabelAnnotations(getCurrentSelectionLabels());
+  const distanceString = String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8)));
 
   if(!hasTextValue(buildingKey) || !hasTextValue(unitName)) return null;
 
   return {
-building_key: buildingKey,
+    building_key: buildingKey,
+    building_name: firstFilled(row.name, row.title, buildingKey),
     unit_name: unitName,
+    unit: unitName,
+    unit_number: unitName,
+    name: unitName,
+    title: unitName,
+    kind: sel.kind || 'unit',
     updates: {
       description: adminDescInput.value.trim(),
+      desc: adminDescInput.value.trim(),
+      about: adminDescInput.value.trim(),
+
       square_footage: adminAreaInput.value.trim(),
       area: adminAreaInput.value.trim(),
+      area_m2: adminAreaInput.value.trim(),
+      area_sqm: adminAreaInput.value.trim(),
+
+      price: adminPriceInput.value.trim(),
+      list_price: adminPriceInput.value.trim(),
+      estimated_price_unit: adminPriceInput.value.trim(),
+
       beds: adminBedsInput.value.trim(),
       bedrooms: adminBedsInput.value.trim(),
+
       bathrooms: adminBathsInput.value.trim(),
       baths: adminBathsInput.value.trim(),
+
       maintenance_fee: adminMaintenanceInput.value.trim(),
+      maintenance_fees: adminMaintenanceInput.value.trim(),
+      strata_fee: adminMaintenanceInput.value.trim(),
+
       parking_spaces: adminParkingInput.value.trim(),
       total_parking_spaces: adminParkingInput.value.trim(),
+      parking: adminParkingInput.value.trim(),
+
       year_built: adminYearInput.value.trim(),
+      completion_year: adminYearInput.value.trim(),
+      delivery_year: adminYearInput.value.trim(),
+
       estimated_price: adminForecastInput.value.trim(),
+      rate_scenarios: adminForecastInput.value.trim(),
+
       building_features: adminBuildingFeaturesInput.value.trim(),
       building_amenities: adminBuildingAmenitiesInput.value.trim(),
       structures: adminStructuresInput.value.trim(),
       heating_type: adminHeatingInput.value.trim(),
       community_features: adminCommunityInput.value.trim(),
-      label_annotations: labelsExportBox.value.trim(),
-      label_max_view_distance_m: String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8))),
-      label_view_distance_m: String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8)))
+
+      label_annotations: labelString,
+      labels_3d: labelString,
+      text_annotations: labelString,
+      annotation_labels: labelString,
+
+      label_max_view_distance_m: distanceString,
+      label_view_distance_m: distanceString,
+      labels_max_view_distance_m: distanceString,
+      labels_view_distance_m: distanceString
     }
   };
 }
@@ -2730,23 +2776,60 @@ adminApplyBtn.onclick = function(){
   const sel = labelEditorState.currentSelection;
   if(!sel || sel.isExterior || !sel.meta) return;
   const meta = sel.meta;
+  const labelString = formatLabelAnnotations(getCurrentSelectionLabels());
+  const distanceString = String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8)));
+
   meta.area = adminAreaInput.value.trim();
+  meta.square_footage = adminAreaInput.value.trim();
+  meta.area_m2 = adminAreaInput.value.trim();
+  meta.area_sqm = adminAreaInput.value.trim();
+
   meta.price = adminPriceInput.value.trim();
+  meta.list_price = adminPriceInput.value.trim();
+  meta.estimated_price_unit = adminPriceInput.value.trim();
+
   meta.beds = adminBedsInput.value.trim();
+  meta.bedrooms = adminBedsInput.value.trim();
+
   meta.bathrooms = adminBathsInput.value.trim();
+  meta.baths = adminBathsInput.value.trim();
+
   meta.maintenance_fee = adminMaintenanceInput.value.trim();
+  meta.maintenance_fees = adminMaintenanceInput.value.trim();
+  meta.strata_fee = adminMaintenanceInput.value.trim();
+
   meta.parking_spaces = adminParkingInput.value.trim();
+  meta.total_parking_spaces = adminParkingInput.value.trim();
+  meta.parking = adminParkingInput.value.trim();
+
   meta.year_built = adminYearInput.value.trim();
+  meta.completion_year = adminYearInput.value.trim();
+  meta.delivery_year = adminYearInput.value.trim();
+
   meta.estimated_price = adminForecastInput.value.trim();
+  meta.rate_scenarios = adminForecastInput.value.trim();
+
   meta.description = adminDescInput.value;
+  meta.desc = adminDescInput.value;
+  meta.about = adminDescInput.value;
+
   meta.building_features = adminBuildingFeaturesInput.value.trim();
   meta.building_amenities = adminBuildingAmenitiesInput.value.trim();
   meta.structures = adminStructuresInput.value.trim();
   meta.heating_type = adminHeatingInput.value.trim();
   meta.community_features = adminCommunityInput.value.trim();
-  meta.label_annotations = labelsExportBox.value.trim();
-  meta.label_max_view_distance_m = String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8)));
-  meta.label_view_distance_m = meta.label_max_view_distance_m;
+
+  meta.label_annotations = labelString;
+  meta.labels_3d = labelString;
+  meta.text_annotations = labelString;
+  meta.annotation_labels = labelString;
+  labelsExportBox.value = labelString;
+
+  meta.label_max_view_distance_m = distanceString;
+  meta.label_view_distance_m = distanceString;
+  meta.labels_max_view_distance_m = distanceString;
+  meta.labels_view_distance_m = distanceString;
+
   adminEditorStatus.textContent = 'Changes applied locally. Press Save changes to persist them.';
   updateView(Number(selectBox.value));
 };
