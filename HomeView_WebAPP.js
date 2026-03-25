@@ -356,16 +356,6 @@ function parseFutureProjects(raw){
   hTitle.style.cssText="font-weight:700;font-size:16px";
   header.appendChild(hTitle);
 
-  const headerLabelsWrap = document.createElement('label');
-  headerLabelsWrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;margin-left:auto;white-space:nowrap";
-  headerLabelsWrap.innerHTML = '<input id="showLabelsHeaderToggle" type="checkbox"><span>Show labels</span>';
-  header.appendChild(headerLabelsWrap);
-
-  const headerFutureWrap = document.createElement('label');
-  headerFutureWrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap";
-  headerFutureWrap.innerHTML = '<input id="showFutureProjectsToggle" type="checkbox"><span>Show future</span>';
-  header.appendChild(headerFutureWrap);
-
   const collapseBtn = document.createElement('button');
   collapseBtn.type = "button";
   collapseBtn.textContent='▾';
@@ -555,19 +545,25 @@ function renderChipSection(section, items){
   labelToolsCard.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <div style="font-weight:700">3D Labels</div>
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap"><input id="showLabelsToggle" type="checkbox"><span>Show labels</span></label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap"><input id="showFutureProjectsToggle" type="checkbox"><span>Show future</span></label>
         <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
       </div>
     </div>
+    <div style="margin-top:8px">
+      <label style="display:block;font-size:12px;margin-bottom:4px">Label view distance: <span id="labelViewDistanceValue"></span> m</label>
+      <input id="labelViewDistanceRange" class="ui-input" type="range" min="0.5" max="50" step="0.5" style="width:100%">
+    </div>
     <div id="labelEditorBody" style="display:none;flex-direction:column;gap:8px;margin-top:10px">
       <div style="font-size:12px;line-height:1.5;color:#444">Click <b>Pick label position</b>, then click anywhere on the current 3D model to place a text label. Copy the exported string and save it into the sheet column <b>label_annotations</b>.</div>
-      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Label text
-        <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px">
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Label text
+        <input id="labelTextInput" class="ui-input" type="text" placeholder="e.g. 4 m / King Bed / Balcony" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0">
       </label>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Raise (m)<input id="labelRaiseInput" class="ui-input" type="number" value="0" step="0.1" style="padding:8px;border-radius:8px"></label>
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Scale<input id="labelScaleInput" class="ui-input" type="number" value="1" step="0.1" style="padding:8px;border-radius:8px"></label>
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Color<input id="labelColorInput" class="ui-input" type="color" value="#00ff88" style="padding:4px;border-radius:8px;height:38px"></label>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 96px 72px;gap:8px;align-items:end">
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Raise (m)<input id="labelRaiseInput" class="ui-input" type="number" value="0" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Scale<input id="labelScaleInput" class="ui-input" type="number" value="1" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Color<input id="labelColorInput" class="ui-input" type="color" value="#00ff88" style="padding:3px;border-radius:8px;height:38px;box-sizing:border-box;width:100%;min-width:0"></label>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
@@ -577,13 +573,13 @@ function renderChipSection(section, items){
       </div>
       <div id="labelEditorStatus" style="font-size:12px;color:#555">No label selected</div>
       <div id="labelList" style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow:auto"></div>
-      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Export string
-        <textarea id="labelsExportBox" class="ui-input" rows="5" style="padding:8px;border-radius:8px;resize:vertical"></textarea>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Export string
+        <textarea id="labelsExportBox" class="ui-input" rows="5" style="padding:8px;border-radius:8px;resize:vertical;box-sizing:border-box;width:100%;min-width:0"></textarea>
       </label>
     </div>`;
   panelBody.appendChild(labelToolsCard);
-  const showLabelsToggle = header.querySelector('#showLabelsHeaderToggle');
-  const showFutureProjectsToggle = header.querySelector('#showFutureProjectsToggle');
+  const showLabelsToggle = labelToolsCard.querySelector('#showLabelsToggle');
+  const showFutureProjectsToggle = labelToolsCard.querySelector('#showFutureProjectsToggle');
   const editLabelsBtn = labelToolsCard.querySelector('#editLabelsBtn');
   const labelEditorBody = labelToolsCard.querySelector('#labelEditorBody');
   const labelTextInput = labelToolsCard.querySelector('#labelTextInput');
@@ -597,10 +593,36 @@ function renderChipSection(section, items){
   const labelEditorStatus = labelToolsCard.querySelector('#labelEditorStatus');
   const labelList = labelToolsCard.querySelector('#labelList');
   const labelsExportBox = labelToolsCard.querySelector('#labelsExportBox');
+  const labelViewDistanceRange = labelToolsCard.querySelector('#labelViewDistanceRange');
+  const labelViewDistanceValue = labelToolsCard.querySelector('#labelViewDistanceValue');
 
   // Hide label editing tools by default; only admins can unlock them.
   editLabelsBtn.style.display = 'none';
   labelEditorBody.style.display = 'none';
+
+  let globalLabelViewDistanceM = Number(localStorage.getItem('ui.labelViewDistanceM') || 11);
+  if(!Number.isFinite(globalLabelViewDistanceM) || globalLabelViewDistanceM <= 0) globalLabelViewDistanceM = 11;
+  globalLabelViewDistanceM = Math.max(0.5, Math.min(50, globalLabelViewDistanceM));
+  function formatLabelDistanceValue(v){
+    const n = Number(v);
+    if(!Number.isFinite(n)) return '11';
+    return Math.abs(n - Math.round(n)) < 1e-6 ? String(Math.round(n)) : n.toFixed(1);
+  }
+  labelViewDistanceRange.value = String(globalLabelViewDistanceM);
+  labelViewDistanceValue.textContent = formatLabelDistanceValue(globalLabelViewDistanceM);
+  function setGlobalLabelViewDistance(v, persist){
+    const n = Math.max(0.5, Math.min(50, Number(v)||11));
+    globalLabelViewDistanceM = n;
+    labelViewDistanceRange.value = String(n);
+    labelViewDistanceValue.textContent = formatLabelDistanceValue(n);
+    if(persist){ try{ localStorage.setItem('ui.labelViewDistanceM', String(n)); }catch(_){} }
+    const rerender = (typeof globalThis !== 'undefined' && typeof globalThis.renderSelectionLabels === 'function')
+      ? globalThis.renderSelectionLabels
+      : null;
+    if(rerender) rerender();
+  }
+  labelViewDistanceRange.addEventListener('input', function(){ setGlobalLabelViewDistance(this.value, false); });
+  labelViewDistanceRange.addEventListener('change', function(){ setGlobalLabelViewDistance(this.value, true); });
 
 
 const futureProjectEntitiesByBuilding = [];
@@ -2239,7 +2261,8 @@ function fmtMoneyNoDash(n){
         meta.view_distance_m
       );
       const n = Number(v);
-      return Number.isFinite(n) && n > 0 ? n : 8;
+      const sheetDistance = Number.isFinite(n) && n > 0 ? n : 40;
+      return Math.max(0.5, Math.min(50, globalLabelViewDistanceM || sheetDistance || 11));
     }
     function getSelectionAnchor(sel){
       if(!sel || sel.isExterior) return null;
@@ -2298,6 +2321,7 @@ function fmtMoneyNoDash(n){
         labelEditorState.entities.push(e);
       });
     }
+    if (typeof globalThis !== 'undefined') globalThis.renderSelectionLabels = renderSelectionLabels;
     function refreshLabelListUI(){
       const items = getCurrentSelectionLabels();
       labelsExportBox.value = formatLabelAnnotations(items);
@@ -2336,6 +2360,12 @@ function fmtMoneyNoDash(n){
         labelEditorBody.style.display='none';
         clearRenderedLabels();
         return;
+      }
+
+      const sheetDistance = Number(getLabelMaxViewDistanceM(sel));
+      if(Number.isFinite(sheetDistance) && sheetDistance > 0){
+        labelViewDistanceRange.value = String(Math.max(0.5, Math.min(50, globalLabelViewDistanceM || sheetDistance)));
+        labelViewDistanceValue.textContent = formatLabelDistanceValue(labelViewDistanceRange.value);
       }
 
       editLabelsBtn.style.display = admin ? 'inline-flex' : 'none';
@@ -2771,7 +2801,14 @@ function hideUnitMetaUI(){
         const lon=toNum(row.lng), lat=toNum(row.lat);
         const height=toNum(row.height)||20, scale=toNum(row.scale)||10;
         const heading=Cesium.Math.toRadians(toNum(row.heading)||0), pitch=Cesium.Math.toRadians(-30);
-        let distance = (scale>0? scale*25 : (toNum(row.height)||10)*10); if(distance<60) distance=60;
+        let distance = parseFirstNumber(firstFilled(
+          row.building_camera_distance,
+          row.exterior_camera_distance,
+          row.camera_distance_building,
+          row.camera_distance_exterior,
+          row.camera_distance
+        )) || (scale>0? scale*25 : (toNum(row.height)||10)*10);
+        if(distance<60) distance=60;
         getBuildingSurfacePosition(lon,lat,height).then(center=>{
           viewer.scene.camera.lookAt(center, new Cesium.HeadingPitchRange(heading,pitch,distance));
           requestSceneRender();
