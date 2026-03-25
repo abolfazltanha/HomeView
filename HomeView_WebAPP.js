@@ -359,6 +359,7 @@ function parseFutureProjects(raw){
   const headerLabelsWrap = document.createElement('label');
   headerLabelsWrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;margin-left:auto;white-space:nowrap";
   headerLabelsWrap.innerHTML = '<input id="showLabelsHeaderToggle" type="checkbox"><span>Show labels</span>';
+  headerLabelsWrap.style.display = 'none';
   header.appendChild(headerLabelsWrap);
 
   const headerFutureWrap = document.createElement('label');
@@ -2433,9 +2434,14 @@ function fmtMoneyNoDash(n){
       const usable = !!sel && !sel.isExterior;
       const admin = isEditorAdmin();
 
+      // The header toggle must only appear when the current selection can actually have 3D labels.
+      // On exterior/building view it should be hidden completely so the UI does not show a broken toggle.
+      headerLabelsWrap.style.display = usable ? 'flex' : 'none';
+
       labelToolsCard.style.display = usable ? 'block' : 'none';
       adminUnitEditorCard.style.display = (usable && admin) ? 'block' : 'none';
       if(!usable){
+        showLabelsToggle.checked = false;
         labelEditorState.editMode = false;
         labelEditorState.pendingPick = false;
         editLabelsBtn.style.display = 'none';
@@ -2902,11 +2908,34 @@ function hideUnitMetaUI(){
         setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
         const lon=toNum(row.lng), lat=toNum(row.lat);
         const height=toNum(row.height)||20, scale=toNum(row.scale)||10;
-        const heading=Cesium.Math.toRadians(toNum(row.heading)||0), pitch=Cesium.Math.toRadians(-30);
-        let distance = (scale>0? scale*25 : (toNum(row.height)||10)*10); if(distance<60) distance=60;
+        const heading=Cesium.Math.toRadians(toNum(row.heading)||0), pitch=Cesium.Math.toRadians(-28);
+
+        function getExteriorCameraDistance(row, scale, height){
+          const explicit = parseFirstNumber(
+            firstFilled(
+              row.exterior_camera_distance,
+              row.camera_distance_exterior,
+              row.building_camera_distance,
+              row.default_camera_distance,
+              row.camera_distance
+            )
+          );
+          if(Number.isFinite(explicit) && explicit > 0) return explicit;
+
+          // Previous logic could end up too close to the building for some datasets.
+          // Keep a safer default exterior range so the whole building is readable.
+          const byScale = scale > 0 ? scale * 42 : 0;
+          const byHeight = height > 0 ? height * 18 : 0;
+          const dist = Math.max(byScale, byHeight, 120);
+          return dist;
+        }
+
+        const distance = getExteriorCameraDistance(row, scale, height);
         getBuildingSurfacePosition(lon,lat,height).then(center=>{
+          try{ viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); }catch(_){ }
           viewer.scene.camera.lookAt(center, new Cesium.HeadingPitchRange(heading,pitch,distance));
-          requestSceneRender();
+          viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+          requestSceneRenderBurst(3);
         });
         const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov=Math.PI/3;
 
