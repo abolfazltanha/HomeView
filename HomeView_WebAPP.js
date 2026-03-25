@@ -356,6 +356,11 @@ function parseFutureProjects(raw){
   hTitle.style.cssText="font-weight:700;font-size:16px";
   header.appendChild(hTitle);
 
+  const headerFutureWrap = document.createElement('label');
+  headerFutureWrap.style.cssText = "display:none;align-items:center;gap:6px;font-size:12px;margin-left:auto;white-space:nowrap";
+  headerFutureWrap.innerHTML = '<input id="showFutureProjectsToggle" type="checkbox"><span>Show future</span>';
+  header.appendChild(headerFutureWrap);
+
   const collapseBtn = document.createElement('button');
   collapseBtn.type = "button";
   collapseBtn.textContent='▾';
@@ -547,7 +552,6 @@ function renderChipSection(section, items){
       <div style="font-weight:700">3D Labels</div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap"><input id="showLabelsToggle" type="checkbox"><span>Show labels</span></label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap"><input id="showFutureProjectsToggle" type="checkbox"><span>Show future</span></label>
         <button id="editLabelsBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Edit labels</button>
       </div>
     </div>
@@ -579,7 +583,7 @@ function renderChipSection(section, items){
     </div>`;
   panelBody.appendChild(labelToolsCard);
   const showLabelsToggle = labelToolsCard.querySelector('#showLabelsToggle');
-  const showFutureProjectsToggle = labelToolsCard.querySelector('#showFutureProjectsToggle');
+  const showFutureProjectsToggle = header.querySelector('#showFutureProjectsToggle');
   const editLabelsBtn = labelToolsCard.querySelector('#editLabelsBtn');
   const labelEditorBody = labelToolsCard.querySelector('#labelEditorBody');
   const labelTextInput = labelToolsCard.querySelector('#labelTextInput');
@@ -1041,15 +1045,80 @@ async function refreshFutureProjects(bIdx){
     inter.forEach(r=>{ const k=normKey(r.building_key||r.parent||r.name); if(!k) return; if(!interiorsByKey.has(k)) interiorsByKey.set(k,[]); interiorsByKey.get(k).push(r); });
 
     // POI chips
-    let activePoiTypes=new Set();
+    let hiddenPoiTypes = new Set();
+    let futureProjectsEnabled = false;
+    let futureProjectsChipBtn = null;
+
+    function getPoiEntityType(ent){
+      try{
+        const p = ent && ent.properties;
+        const raw = p && p.type && p.type.getValue ? p.type.getValue() : (p && p.type ? p.type : '');
+        return String(raw || '').toLowerCase().trim();
+      }catch(_){
+        return '';
+      }
+    }
+
+    function stylePoiChip(btn, hidden){
+      btn.style.opacity = hidden ? "0.6" : "1";
+      btn.style.background = hidden ? "#fff" : "#eef2ff";
+    }
+
+    function syncFutureProjectsChip(){
+      if(showFutureProjectsToggle) showFutureProjectsToggle.checked = !!futureProjectsEnabled;
+      if(!futureProjectsChipBtn) return;
+      stylePoiChip(futureProjectsChipBtn, !futureProjectsEnabled);
+    }
+
+    function applyPoiTypeFilters(idx){
+      const activeIdx = Number.isFinite(Number(idx)) ? Number(idx) : Number(selectBox && selectBox.value || 0);
+      const isExterior = !!(viewSelect && viewSelect.value === 'exterior');
+      poiSources.forEach((ds, i) => {
+        const baseShow = isExterior && i === activeIdx;
+        ds.entities.values.forEach(ent => {
+          const type = getPoiEntityType(ent);
+          const allowed = !hiddenPoiTypes.has(type);
+          ent.show = !!(baseShow && allowed);
+        });
+      });
+      requestSceneRender();
+    }
+
     function rebuildChips(typeSet){
-      filterRow.innerHTML='';
-      if(typeSet.size===0){ const d=document.createElement('div'); d.style.cssText="font-size:12px;opacity:.7"; d.textContent='No POI types'; filterRow.appendChild(d); return; }
-      typeSet.forEach(tn=>{
-        const btn=document.createElement('button');
-        btn.className='ui-btn';
-        btn.textContent=tn; btn.style.cssText="padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px";
-        btn.onclick=()=>{ if(activePoiTypes.has(tn)){ activePoiTypes.delete(tn); btn.style.opacity="0.6"; btn.style.background='#fff'; } else { activePoiTypes.add(tn); btn.style.opacity="1"; btn.style.background='#eef2ff'; } mini.refreshCity(Number(selectBox.value)); updateCommute(Number(selectBox.value)); };
+      filterRow.innerHTML = '';
+
+      futureProjectsChipBtn = document.createElement('button');
+      futureProjectsChipBtn.className = 'ui-btn';
+      futureProjectsChipBtn.textContent = 'Future projects';
+      futureProjectsChipBtn.style.cssText = "padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px";
+      futureProjectsChipBtn.onclick = async () => {
+        futureProjectsEnabled = !futureProjectsEnabled;
+        syncFutureProjectsChip();
+        if(!futureProjectsEnabled){
+          clearAllFutureProjectEntities();
+          return;
+        }
+        await refreshFutureProjects(Number(selectBox.value || 0));
+      };
+      filterRow.appendChild(futureProjectsChipBtn);
+      syncFutureProjectsChip();
+
+      if(typeSet.size === 0) return;
+
+      typeSet.forEach(tn => {
+        const btn = document.createElement('button');
+        btn.className = 'ui-btn';
+        btn.textContent = tn;
+        btn.style.cssText = "padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px";
+        stylePoiChip(btn, hiddenPoiTypes.has(tn));
+        btn.onclick = () => {
+          if(hiddenPoiTypes.has(tn)) hiddenPoiTypes.delete(tn);
+          else hiddenPoiTypes.add(tn);
+          stylePoiChip(btn, hiddenPoiTypes.has(tn));
+          applyPoiTypeFilters(Number(selectBox.value));
+          mini.refreshCity(Number(selectBox.value));
+          updateCommute(Number(selectBox.value));
+        };
         filterRow.appendChild(btn);
       });
     }
@@ -1059,6 +1128,23 @@ async function refreshFutureProjects(bIdx){
     function colorForType(type){ const t=(type||'').toLowerCase(); if(t.includes('super'))return Cesium.Color.fromCssColorString('#2e7d32'); if(t.includes('school')||t.includes('univ'))return Cesium.Color.fromCssColorString('#1565c0'); if(t.includes('hosp')||t.includes('clinic'))return Cesium.Color.fromCssColorString('#c62828'); if(t.includes('park'))return Cesium.Color.fromCssColorString('#2e7d32').withAlpha(0.85); if(t.includes('transit')||t.includes('station')||t.includes('bus'))return Cesium.Color.fromCssColorString('#6d4c41'); if(t.includes('gym')||t.includes('fitness'))return Cesium.Color.fromCssColorString('#8e24aa'); if(t.includes('cafe')||t.includes('coffee'))return Cesium.Color.fromCssColorString('#5d4037'); return Cesium.Color.fromCssColorString('#455a64'); }
     function poiBillboard(type,icon){ const col=colorForType(type); const img = icon? pinBuilder.fromText(icon,col,42).toDataURL() : pinBuilder.fromColor(col,32).toDataURL(); return { image:img, verticalOrigin:Cesium.VerticalOrigin.BOTTOM, scale:1, disableDepthTestDistance:Number.POSITIVE_INFINITY }; }
     function metersBetween(a,b){ const g=new Cesium.EllipsoidGeodesic(a,b); return g.surfaceDistance; }
+    function getPoiRadiusMeters(buildingRow, poiRow, fallback){
+      const poiRadius = toNum(firstFilled(
+        poiRow && poiRow.radius,
+        poiRow && poiRow.radius_m,
+        poiRow && poiRow.poi_radius,
+        poiRow && poiRow.max_distance,
+        poiRow && poiRow.distance_m
+      ));
+      if (Number.isFinite(poiRadius) && poiRadius > 0) return poiRadius;
+      const buildingRadius = toNum(firstFilled(
+        buildingRow && buildingRow.radius_m,
+        buildingRow && buildingRow.poi_radius,
+        buildingRow && buildingRow.radius
+      ));
+      if (Number.isFinite(buildingRadius) && buildingRadius > 0) return buildingRadius;
+      return Number.isFinite(fallback) && fallback > 0 ? fallback : 800;
+    }
 
     b.forEach((br,i)=>{
       const ds=new Cesium.CustomDataSource('pois-'+i);
@@ -1066,14 +1152,15 @@ async function refreshFutureProjects(bIdx){
       poiSources[i]=ds; viewer.dataSources.add(ds);
 
       const key=normKey(br.name); const listKey=poisByKey.get(key)||[];
-      const radius=toNum(br.radius_m)||800; const cLat=toNum(br.lat), cLng=toNum(br.lng);
+      const defaultRadius=getPoiRadiusMeters(br, null, 800); const cLat=toNum(br.lat), cLng=toNum(br.lng);
       const center=Cesium.Cartographic.fromDegrees(cLng,cLat);
       const candidates = listKey.length>0 ? listKey : p;
       const types=new Set();
 
       candidates.forEach(poi=>{
         const plat=toNum(poi.lat), plng=toNum(poi.lng); if(!Number.isFinite(plat)||!Number.isFinite(plng)) return;
-        const dist=metersBetween(center, Cesium.Cartographic.fromDegrees(plng,plat)); if(dist>radius) return;
+        const poiRadius = getPoiRadiusMeters(br, poi, defaultRadius);
+        const dist=metersBetween(center, Cesium.Cartographic.fromDegrees(plng,plat)); if(dist>poiRadius) return;
         const type=(poi.type||'').toLowerCase().trim();
         const ent=ds.entities.add({
           position: Cesium.Cartesian3.fromDegrees(plng,plat,0),
@@ -1086,7 +1173,7 @@ async function refreshFutureProjects(bIdx){
         types.add(type||'other');
       });
 
-      if(i===0){ activePoiTypes=new Set(); rebuildChips(types); }
+      if(i===0){ hiddenPoiTypes = new Set(); rebuildChips(types); }
       clampDataSourceToSurface(ds);
     });
 
@@ -2005,14 +2092,15 @@ function fmtMoneyNoDash(n){
     function prettyMin(m){ if(!Number.isFinite(m)) return '—'; if(m<1) return '<1m'; if(m<60) return Math.round(m)+'m'; const h=Math.floor(m/60), mm=Math.round(m%60); return h+'h '+(mm?mm+'m':''); }
     function updateCommute(bIdx){
       const row=b[bIdx]; if(!row){ commuteCard.style.display='none'; return; }
-      const r=toNum(row.radius_m)||1500, cLat=toNum(row.lat), cLng=toNum(row.lng);
+      const r=getPoiRadiusMeters(row, null, 1500), cLat=toNum(row.lat), cLng=toNum(row.lng);
       const center=Cesium.Cartographic.fromDegrees(cLng,cLat);
       const best={};
       p.forEach(poi=>{
         const t=(poi.type||'').toLowerCase();
         if(!COMMUTE.some(k=>t.includes(k))) return;
         const plat=toNum(poi.lat), plng=toNum(poi.lng); if(!Number.isFinite(plat)||!Number.isFinite(plng)) return;
-        const d=metersBetween(center, Cesium.Cartographic.fromDegrees(plng,plat)); if(d>r) return;
+        const poiRadius = getPoiRadiusMeters(row, poi, r);
+        const d=metersBetween(center, Cesium.Cartographic.fromDegrees(plng,plat)); if(d>poiRadius) return;
         const key=COMMUTE.find(k=>t.includes(k))||'other';
         if(!best[key]||d<best[key].dist) best[key]={name:poi.name||'', dist:d};
       });
@@ -2151,7 +2239,7 @@ function fmtMoneyNoDash(n){
       return {
         setMode, refreshCity(idx){
           const row=b[idx]; if(!row) return;
-          const lat=toNum(row.lat), lng=toNum(row.lng), radius=toNum(row.radius_m)||800;
+          const lat=toNum(row.lat), lng=toNum(row.lng), radius=getPoiRadiusMeters(row, null, 800);
           try{ map.setView([lat,lng],15); }catch(e){}
           layerSelected.clearLayers(); layerPois.clearLayers();
           L.circle([lat,lng],{radius,color:'#1976d2',weight:1,fill:false}).addTo(layerSelected);
@@ -2159,9 +2247,10 @@ function fmtMoneyNoDash(n){
           p.forEach(poi=>{
             const plat=toNum(poi.lat), plng=toNum(poi.lng); if(!Number.isFinite(plat)||!Number.isFinite(plng)) return;
             let dist=Infinity; try{ dist=new Cesium.EllipsoidGeodesic(cCarto,Cesium.Cartographic.fromDegrees(plng,plat)).surfaceDistance; }catch(_){ }
-            if(dist>radius) return;
+            const poiRadius = getPoiRadiusMeters(row, poi, radius);
+            if(dist>poiRadius) return;
             const type=(poi.type||'').toLowerCase().trim();
-            if(activePoiTypes.size && !activePoiTypes.has(type)) return;
+            if(hiddenPoiTypes.has(type)) return;
             const m=L.circleMarker([plat,plng],{radius:3,color:'#455a64',weight:1,fillColor:'#455a64',fillOpacity:0.9});
             if(poi.name) m.bindTooltip(poi.name,{direction:'top',offset:[0,-2]});
             m.addTo(layerPois);
@@ -2386,8 +2475,12 @@ function fmtMoneyNoDash(n){
     showLabelsToggle.checked = false;
     showLabelsToggle.addEventListener('change', function(){ renderSelectionLabels(); });
     showFutureProjectsToggle.checked = false;
+    futureProjectsEnabled = false;
+    syncFutureProjectsChip();
     showFutureProjectsToggle.addEventListener('change', async function(){
-      if(!showFutureProjectsToggle.checked){
+      futureProjectsEnabled = !!showFutureProjectsToggle.checked;
+      syncFutureProjectsChip();
+      if(!futureProjectsEnabled){
         clearAllFutureProjectEntities();
         return;
       }
@@ -2655,8 +2748,8 @@ adminApplyBtn.onclick = function(){
     viewer.camera.changed.addEventListener(()=>{ tip.style.display='none'; });
 
     function refreshPoisForSelection(){
-      const idx=Number(selectBox.value), isExterior=(viewSelect.value==='exterior');
-      poiSources.forEach((ds,i)=>{ const show=(i===idx)&&isExterior; ds.entities.values.forEach(ent=>ent.show=!!show); });
+      const idx = Number(selectBox.value);
+      applyPoiTypeFilters(idx);
     }
 
     function rebuildViewOptions(idx){
@@ -2688,8 +2781,21 @@ adminApplyBtn.onclick = function(){
       }
     }
 
-    selectBox.addEventListener('change', async ()=>{ rebuildViewOptions(Number(selectBox.value)); scheduleViewUpdate(); await refreshFutureProjects(Number(selectBox.value)); });
-    viewSelect.addEventListener('change', async ()=>{ scheduleViewUpdate(); await refreshFutureProjects(Number(selectBox.value)); });
+    selectBox.addEventListener('change', async ()=>{
+      const idx = Number(selectBox.value);
+      rebuildViewOptions(idx);
+      scheduleViewUpdate();
+      applyPoiTypeFilters(idx);
+      if(futureProjectsEnabled) await refreshFutureProjects(idx);
+      else clearAllFutureProjectEntities();
+    });
+    viewSelect.addEventListener('change', async ()=>{
+      const idx = Number(selectBox.value);
+      scheduleViewUpdate();
+      applyPoiTypeFilters(idx);
+      if(futureProjectsEnabled) await refreshFutureProjects(idx);
+      else clearAllFutureProjectEntities();
+    });
 
 
 function renderUnitMetaUI(meta, row){
@@ -2789,12 +2895,12 @@ function hideUnitMetaUI(){
         priceCard.style.display='none';
         commuteCard.style.display='none';
         refreshPoisForSelection();
-        refreshFutureProjects(idx);
+        if(futureProjectsEnabled) refreshFutureProjects(idx); else clearAllFutureProjectEntities();
         return;
       }
 
       refreshPoisForSelection();
-      refreshFutureProjects(idx);
+      if(futureProjectsEnabled) refreshFutureProjects(idx); else clearAllFutureProjectEntities();
 
       if(isExterior){
         setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
@@ -2955,7 +3061,7 @@ function hideUnitMetaUI(){
     }
 
     function refreshAllCityLayers(idx){
-      poiSources.forEach((ds,i)=>{ const show=(i===idx)&&(viewSelect.value==='exterior'); ds.entities.values.forEach(ent=>ent.show=!!show); });
+      applyPoiTypeFilters(idx);
     }
     selectBox.addEventListener('change',()=>refreshAllCityLayers(Number(selectBox.value)));
 
