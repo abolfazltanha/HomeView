@@ -1149,6 +1149,14 @@ async function refreshFutureProjects(bIdx){
       return Number.isFinite(fallback) && fallback > 0 ? fallback : 800;
     }
 
+    function formatPoiTravelLine(distMeters){
+      const SPEED_WALK = 4.5/3.6, SPEED_DRIVE = 35/3.6;
+      function prettyMin(m){ if(!Number.isFinite(m)) return '—'; if(m < 1) return '<1m'; if(m < 60) return Math.round(m) + 'm'; const h = Math.floor(m/60), mm = Math.round(m%60); return h + 'h ' + (mm ? mm + 'm' : ''); }
+      const walk = prettyMin(distMeters / (SPEED_WALK * 60));
+      const drive = prettyMin(distMeters / (SPEED_DRIVE * 60));
+      return 'walk ' + walk + ' • drive ' + drive;
+    }
+
     b.forEach((br,i)=>{
       const ds=new Cesium.CustomDataSource('pois-'+i);
       ds.clustering=new Cesium.EntityCluster({enabled:true,pixelRange:40,minimumClusterSize:3});
@@ -1169,7 +1177,7 @@ async function refreshFutureProjects(bIdx){
         const ent=ds.entities.add({
           position: Cesium.Cartesian3.fromDegrees(plng,plat,0),
           billboard: poiBillboard(type,(poi.icon||'').trim()),
-          label: { text: poi.name||'', font:"14px sans-serif", fillColor:Cesium.Color.BLACK, outlineColor:Cesium.Color.WHITE, outlineWidth:3, style:Cesium.LabelStyle.FILL_AND_OUTLINE, verticalOrigin:Cesium.VerticalOrigin.TOP, pixelOffset: new Cesium.Cartesian2(0, -42), showBackground:true, backgroundColor:Cesium.Color.fromCssColorString('#ffffff').withAlpha(0.75), disableDepthTestDistance:Number.POSITIVE_INFINITY },
+          label: { text: (poi.name||'') + '\n' + formatPoiTravelLine(dist), font:"14px sans-serif", fillColor:Cesium.Color.BLACK, outlineColor:Cesium.Color.WHITE, outlineWidth:3, style:Cesium.LabelStyle.FILL_AND_OUTLINE, verticalOrigin:Cesium.VerticalOrigin.TOP, horizontalOrigin: Cesium.HorizontalOrigin.CENTER, pixelOffset: new Cesium.Cartesian2(0, -42), showBackground:true, backgroundColor:Cesium.Color.fromCssColorString('#ffffff').withAlpha(0.75), disableDepthTestDistance:Number.POSITIVE_INFINITY },
           properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:2 },
           show: i===0
         });
@@ -2090,32 +2098,14 @@ function fmtMoneyNoDash(n){
     commuteCard.className='ui-card';
     commuteCard.style.cssText="border-radius:12px;padding:10px;display:none";
     commuteCard.innerHTML='<div style="font-weight:700;margin-bottom:6px">Commute & Proximity</div><div id="commuteBody" style="display:flex;flex-direction:column;gap:6px"></div>';
-    panelBody.appendChild(commuteCard);
+    // Commute card removed from Controls UI; times are shown directly on POI labels.
     const commuteBody=commuteCard.querySelector('#commuteBody');
     const SPEED_WALK=4.5/3.6, SPEED_DRIVE=35/3.6;
     const COMMUTE=['school','transit','station','bus','park','hospital','clinic','super','supermarket','cafe'];
     function prettyMin(m){ if(!Number.isFinite(m)) return '—'; if(m<1) return '<1m'; if(m<60) return Math.round(m)+'m'; const h=Math.floor(m/60), mm=Math.round(m%60); return h+'h '+(mm?mm+'m':''); }
     function updateCommute(bIdx){
-      const row=b[bIdx]; if(!row){ commuteCard.style.display='none'; return; }
-      const r=getPoiRadiusMeters(row, null, 1500), cLat=toNum(row.lat), cLng=toNum(row.lng);
-      const center=Cesium.Cartographic.fromDegrees(cLng,cLat);
-      const best={};
-      p.forEach(poi=>{
-        const t=(poi.type||'').toLowerCase();
-        if(!COMMUTE.some(k=>t.includes(k))) return;
-        const plat=toNum(poi.lat), plng=toNum(poi.lng); if(!Number.isFinite(plat)||!Number.isFinite(plng)) return;
-        const poiRadius = getPoiRadiusMeters(row, poi, r);
-        const d=metersBetween(center, Cesium.Cartographic.fromDegrees(plng,plat)); if(d>poiRadius) return;
-        const key=COMMUTE.find(k=>t.includes(k))||'other';
-        if(!best[key]||d<best[key].dist) best[key]={name:poi.name||'', dist:d};
-      });
-      const html=Object.keys(best).map(k=>{
-        const v=best[k];
-        const label=k.charAt(0).toUpperCase()+k.slice(1);
-        return `<div style="display:flex;justify-content:space-between;font-size:13px"><span>nearest ${label}${v.name?`: ${v.name}`:''}</span><span>walk ${prettyMin(v.dist/(SPEED_WALK*60))} • drive ${prettyMin(v.dist/(SPEED_DRIVE*60))}</span></div>`;
-      }).slice(0,6).join('');
-      commuteBody.innerHTML=html||'<div style="opacity:.7">—</div>';
-      commuteCard.style.display='block';
+      commuteBody.innerHTML = '';
+      commuteCard.style.display = 'none';
     }
 
     // ===== Price Insights (current) =====
@@ -3069,7 +3059,7 @@ function hideUnitMetaUI(){
         priceCard.style.display='none';
 
         mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
-        updateCommute(idx); commuteCard.style.display='block';
+        updateCommute(idx);
       } else if (selectedIsAmenity) {
         const k=selectedIndex;
         const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
@@ -3162,7 +3152,6 @@ function hideUnitMetaUI(){
           compareCard.style.display='block';
           similarCard.style.display='block';
           priceCard.style.display='block';
-          commuteCard.style.display='block';
 
           const autoPrice=getCurrentPrice(meta,row);
           loanPrice.value = Number.isFinite(autoPrice) && autoPrice>0 ? String(autoPrice) : '';
@@ -3186,7 +3175,6 @@ function hideUnitMetaUI(){
           compareCard.style.display='none';
           similarCard.style.display='none';
           priceCard.style.display='none';
-          commuteCard.style.display='none';
           mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
         }
       }
