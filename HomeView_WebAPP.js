@@ -622,6 +622,14 @@ function renderChipSection(section, items){
   const labelColorInput = labelToolsCard.querySelector('#labelColorInput');
   const labelActionTypeSelect = labelToolsCard.querySelector('#labelActionTypeSelect');
   const labelActionValueInput = labelToolsCard.querySelector('#labelActionValueInput');
+  const labelActionValueList = document.createElement('datalist');
+  labelActionValueList.id = 'labelActionValueList';
+  labelToolsCard.appendChild(labelActionValueList);
+  labelActionValueInput.setAttribute('list', 'labelActionValueList');
+  const labelCurrentSceneHint = document.createElement('div');
+  labelCurrentSceneHint.style.cssText = 'font-size:12px;color:#555;margin-top:6px';
+  labelCurrentSceneHint.textContent = 'Current panorama scene: —';
+  labelActionValueInput.parentElement.appendChild(labelCurrentSceneHint);
   const pickLabelBtn = labelToolsCard.querySelector('#pickLabelBtn');
   const newLabelBtn = labelToolsCard.querySelector('#newLabelBtn');
   const deleteLabelBtn = labelToolsCard.querySelector('#deleteLabelBtn');
@@ -772,6 +780,7 @@ async function refreshFutureProjects(bIdx){
   // ===== Mouse bindings =====
   const ssc = viewer.scene.screenSpaceCameraController;
   function setExteriorMouseBindings(){
+    panoramaDragController.disable();
     viewer.scene.camera.constrainedAxis = Cesium.Cartesian3.UNIT_Z;
     ssc.enableRotate = true;
     ssc.enableTranslate = false;
@@ -784,6 +793,7 @@ async function refreshFutureProjects(bIdx){
     ssc.lookEventTypes = [];
   }
   function setInteriorMouseBindings(){
+    panoramaDragController.disable();
     viewer.scene.camera.constrainedAxis = undefined;
     ssc.enableRotate=false; ssc.enableTranslate=false; ssc.enableTilt=false;
     ssc.enableLook=true;
@@ -796,11 +806,12 @@ async function refreshFutureProjects(bIdx){
     ssc.enableTranslate = false;
     ssc.enableTilt = false;
     ssc.enableZoom = false;
-    ssc.enableLook = true;
-    ssc.lookEventTypes = [Cesium.CameraEventType.LEFT_DRAG];
+    ssc.enableLook = false;
+    ssc.lookEventTypes = [];
     ssc.rotateEventTypes = [];
     ssc.translateEventTypes = [];
     ssc.tiltEventTypes = [];
+    panoramaDragController.enable();
   }
   setExteriorMouseBindings();
 
@@ -810,6 +821,73 @@ async function refreshFutureProjects(bIdx){
       cam.setView({ destination: cam.positionWC, orientation: { heading: cam.heading, pitch: cam.pitch, roll: 0.0 } });
     }
   }
+
+  const panoramaDragController = (function(){
+    let enabled = false;
+    let dragging = false;
+    let axisLock = '';
+    let startX = 0, startY = 0, lastX = 0, lastY = 0;
+    const lockThreshold = 5;
+    const headingPerPixel = 0.0035;
+    const pitchPerPixel = 0.0030;
+
+    function getPoint(evt){
+      const t = (evt.touches && evt.touches[0]) || (evt.changedTouches && evt.changedTouches[0]) || evt;
+      return t ? { x: t.clientX, y: t.clientY } : null;
+    }
+    function begin(evt){
+      if(!enabled) return;
+      if(evt.touches && evt.touches.length > 1) return;
+      const p = getPoint(evt);
+      if(!p) return;
+      dragging = true;
+      axisLock = '';
+      startX = lastX = p.x;
+      startY = lastY = p.y;
+      evt.preventDefault();
+    }
+    function move(evt){
+      if(!enabled || !dragging) return;
+      const p = getPoint(evt);
+      if(!p) return;
+      const totalDx = p.x - startX;
+      const totalDy = p.y - startY;
+      if(!axisLock){
+        if(Math.abs(totalDx) < lockThreshold && Math.abs(totalDy) < lockThreshold) return;
+        axisLock = Math.abs(totalDx) >= Math.abs(totalDy) ? 'horizontal' : 'vertical';
+      }
+      const dx = p.x - lastX;
+      const dy = p.y - lastY;
+      lastX = p.x;
+      lastY = p.y;
+      const cam = viewer.camera;
+      const heading = cam.heading - (axisLock === 'horizontal' ? dx * headingPerPixel : 0);
+      const pitchRaw = cam.pitch - (axisLock === 'vertical' ? dy * pitchPerPixel : 0);
+      const pitch = Math.max(Cesium.Math.toRadians(-89), Math.min(Cesium.Math.toRadians(89), pitchRaw));
+      cam.setView({
+        destination: cam.positionWC,
+        orientation: { heading: heading, pitch: pitch, roll: 0.0 }
+      });
+      evt.preventDefault();
+      requestSceneRender();
+    }
+    function end(){
+      dragging = false;
+      axisLock = '';
+    }
+    const el = viewer.scene.canvas;
+    el.addEventListener('mousedown', begin, { passive:false });
+    window.addEventListener('mousemove', move, { passive:false });
+    window.addEventListener('mouseup', end, { passive:true });
+    el.addEventListener('touchstart', begin, { passive:false });
+    window.addEventListener('touchmove', move, { passive:false });
+    window.addEventListener('touchend', end, { passive:true });
+    window.addEventListener('touchcancel', end, { passive:true });
+    return {
+      enable(){ enabled = true; },
+      disable(){ enabled = false; end(); }
+    };
+  })();
 
   // ===== Keyboard/Joystick move =====
   function makeInteriorKeyboardMove(viewer){
@@ -1538,6 +1616,45 @@ async function refreshFutureProjects(bIdx){
           || String(it.title || '').toLowerCase() === key
           || String(it.url || '').toLowerCase() === key;
       }) || cfg.defaultItem || items[0];
+    }
+
+    function getPanoramaSelectionKey(sel){
+      return sel ? makeCustomizationSelectionKey(sel.bIdx, sel.itemIdx) : '';
+    }
+    function getActivePanoramaItemForSelection(sel){
+      if(!sel || !sel.meta || !isPanoramaRow(sel.meta)) return null;
+      const key = getPanoramaSelectionKey(sel);
+      return panoramaSelectionsByKey.get(key) || getPanoramaConfig(sel.meta, sel.row).defaultItem || null;
+    }
+    function getCurrentPanoramaSceneKey(sel){
+      const item = getActivePanoramaItemForSelection(sel);
+      return item ? String(item.key || item.title || '').trim() : '';
+    }
+    function parsePanoramaSceneLabelAnnotations(str){
+      const out = {};
+      const raw = String(str || '').trim();
+      if(!raw) return out;
+      raw.split('||').forEach(function(sceneChunk){
+        const chunk = String(sceneChunk || '').trim();
+        if(!chunk) return;
+        const splitIdx = chunk.indexOf('>>');
+        if(splitIdx < 0) return;
+        const sceneKey = chunk.slice(0, splitIdx).trim();
+        const labelsRaw = chunk.slice(splitIdx + 2).trim();
+        if(!sceneKey) return;
+        out[sceneKey] = labelsRaw ? parseLabelAnnotations(labelsRaw.replace(/##/g, '; ')) : [];
+      });
+      return out;
+    }
+    function formatPanoramaSceneLabelAnnotations(mapObj){
+      const out = [];
+      Object.keys(mapObj || {}).forEach(function(sceneKey){
+        const items = (mapObj[sceneKey] || []).filter(Boolean);
+        if(!items.length) return;
+        const encoded = formatLabelAnnotations(items).replace(/;\s*/g, '##');
+        out.push(String(sceneKey).replace(/[|>;]/g, ' ').trim() + '>>' + encoded);
+      });
+      return out.join('||');
     }
 
     function patchRawGltfTextureForAll(gltf, textureUrl){
@@ -2431,9 +2548,18 @@ function fmtMoneyNoDash(n){
       entities: []
     };
 
-    function getSelectionKey(sel){
+    function getSelectionBaseKey(sel){
       if(!sel || sel.isExterior) return '';
       return [sel.bIdx, sel.kind, sel.itemIdx].join(':');
+    }
+    function getSelectionKey(sel){
+      const baseKey = getSelectionBaseKey(sel);
+      if(!baseKey) return '';
+      if(sel && sel.meta && isPanoramaRow(sel.meta)){
+        const sceneKey = getCurrentPanoramaSceneKey(sel) || '__default__';
+        return baseKey + '@' + sceneKey;
+      }
+      return baseKey;
     }
     function parseLabelAnnotations(str){
       if(!str || !String(str).trim()) return [];
@@ -2479,25 +2605,81 @@ function fmtMoneyNoDash(n){
       const s = String(v || '').trim();
       return /^#[0-9a-fA-F]{6}$/.test(s) ? s : '#00ff88';
     }
+    function getPanoramaSceneLabelMapForSelection(sel){
+      if(!sel || !sel.meta || !isPanoramaRow(sel.meta)) return null;
+      const baseKey = getSelectionBaseKey(sel);
+      if(!baseKey) return null;
+      const mapKey = baseKey + '@@sceneMap';
+      if(!labelEditorState.cache.has(mapKey)){
+        const meta = sel.meta || {};
+        const sceneMap = parsePanoramaSceneLabelAnnotations(firstFilled(meta.panorama_label_annotations, meta.panorama_labels));
+        if(!Object.keys(sceneMap).length){
+          const defaultSceneKey = getCurrentPanoramaSceneKey(sel) || '__default__';
+          const legacy = parseLabelAnnotations(firstFilled(meta.label_annotations, meta.labels_3d, meta.text_annotations, meta.annotation_labels));
+          sceneMap[defaultSceneKey] = legacy;
+        }
+        labelEditorState.cache.set(mapKey, sceneMap);
+      }
+      return labelEditorState.cache.get(mapKey);
+    }
     function getCurrentSelectionLabels(){
-      const key = getSelectionKey(labelEditorState.currentSelection);
+      const sel = labelEditorState.currentSelection;
+      const key = getSelectionKey(sel);
       if(!key) return [];
+      if(sel && sel.meta && isPanoramaRow(sel.meta)){
+        const sceneMap = getPanoramaSceneLabelMapForSelection(sel) || {};
+        const sceneKey = getCurrentPanoramaSceneKey(sel) || '__default__';
+        if(!Array.isArray(sceneMap[sceneKey])) sceneMap[sceneKey] = [];
+        labelEditorState.cache.set(key, sceneMap[sceneKey]);
+        return sceneMap[sceneKey];
+      }
       if(!labelEditorState.cache.has(key)){
-        const meta = labelEditorState.currentSelection.meta || {};
+        const meta = sel.meta || {};
         const raw = firstFilled(meta.label_annotations, meta.labels_3d, meta.text_annotations, meta.annotation_labels);
         labelEditorState.cache.set(key, parseLabelAnnotations(raw));
       }
       return labelEditorState.cache.get(key);
     }
     function setCurrentSelectionLabels(items){
-      const key = getSelectionKey(labelEditorState.currentSelection);
+      const sel = labelEditorState.currentSelection;
+      const key = getSelectionKey(sel);
       if(!key) return;
-      const clean = (items||[]).map(it=>({ text:String(it.text||'Label'), x:Number(it.x)||0, y:Number(it.y)||0, z:Number(it.z)||0, scale:(Number(it.scale)>0?Number(it.scale):1), color:it.color||'#00ff88' }));
+      const clean = (items||[]).map(function(it){
+        return {
+          text:String(it.text||'Label'),
+          x:Number(it.x)||0,
+          y:Number(it.y)||0,
+          z:Number(it.z)||0,
+          scale:(Number(it.scale)>0?Number(it.scale):1),
+          color:it.color||'#00ff88',
+          actionType:String(it.actionType || 'none'),
+          actionValue:String(it.actionValue || '')
+        };
+      });
       labelEditorState.cache.set(key, clean);
-      if(labelEditorState.currentSelection && labelEditorState.currentSelection.meta){
-        labelEditorState.currentSelection.meta.label_annotations = formatLabelAnnotations(clean);
+      if(sel && sel.meta){
+        if(isPanoramaRow(sel.meta)){
+          const sceneMap = getPanoramaSceneLabelMapForSelection(sel) || {};
+          const sceneKey = getCurrentPanoramaSceneKey(sel) || '__default__';
+          sceneMap[sceneKey] = clean;
+          const sceneString = formatLabelAnnotations(clean);
+          const allScenesString = formatPanoramaSceneLabelAnnotations(sceneMap);
+          sel.meta.panorama_label_annotations = allScenesString;
+          sel.meta.panorama_labels = allScenesString;
+          sel.meta.label_annotations = sceneString;
+          sel.meta.labels_3d = sceneString;
+          sel.meta.text_annotations = sceneString;
+          sel.meta.annotation_labels = sceneString;
+          labelsExportBox.value = allScenesString;
+          return;
+        }
+        const labelString = formatLabelAnnotations(clean);
+        sel.meta.label_annotations = labelString;
+        sel.meta.labels_3d = labelString;
+        sel.meta.text_annotations = labelString;
+        sel.meta.annotation_labels = labelString;
+        labelsExportBox.value = labelString;
       }
-      labelsExportBox.value = formatLabelAnnotations(clean);
     }
     function clearRenderedLabels(){
       while(labelEditorState.entities.length){
@@ -2563,6 +2745,27 @@ function fmtMoneyNoDash(n){
       const inv = Cesium.Matrix4.inverseTransformation(matrix, new Cesium.Matrix4());
       return { pos, q, matrix, inv };
     }
+    function updatePanoramaLabelUiHints(){
+      const sel = labelEditorState.currentSelection;
+      const isPano = !!(sel && sel.meta && isPanoramaRow(sel.meta));
+      if(labelActionValueInput) labelActionValueInput.placeholder = isPano ? 'e.g. kitchen' : '';
+      if(labelCurrentSceneHint) labelCurrentSceneHint.style.display = isPano ? 'block' : 'none';
+      if(labelActionValueList) labelActionValueList.innerHTML = '';
+      if(!isPano){
+        if(labelCurrentSceneHint) labelCurrentSceneHint.textContent = 'Current panorama scene: —';
+        return;
+      }
+      const active = getActivePanoramaItemForSelection(sel);
+      if(labelCurrentSceneHint) labelCurrentSceneHint.textContent = 'Current panorama scene: ' + (active ? (active.title || active.key) : '—');
+      const cfg = getPanoramaConfig(sel.meta, sel.row);
+      (cfg.items || []).forEach(function(it){
+        const op = document.createElement('option');
+        op.value = String(it.key || it.title || '');
+        op.label = String(it.title || it.key || '');
+        labelActionValueList.appendChild(op);
+      });
+    }
+
     function renderSelectionLabels(){
       clearRenderedLabels();
       const sel = labelEditorState.currentSelection;
@@ -2599,7 +2802,12 @@ function fmtMoneyNoDash(n){
     }
     function refreshLabelListUI(){
       const items = getCurrentSelectionLabels();
-      labelsExportBox.value = formatLabelAnnotations(items);
+      if(labelEditorState.currentSelection && labelEditorState.currentSelection.meta && isPanoramaRow(labelEditorState.currentSelection.meta)) {
+        labelsExportBox.value = firstFilled(labelEditorState.currentSelection.meta.panorama_label_annotations, labelEditorState.currentSelection.meta.panorama_labels, formatLabelAnnotations(items));
+      } else {
+        labelsExportBox.value = formatLabelAnnotations(items);
+      }
+      updatePanoramaLabelUiHints();
       labelList.innerHTML='';
       items.forEach(function(it, idx){
         const btn = document.createElement('button');
@@ -2694,6 +2902,26 @@ function fmtMoneyNoDash(n){
       if(!labelEditorState.editMode) labelEditorState.pendingPick = false;
       syncLabelToolsVisibility();
     };
+    function commitSelectedLabelFormChanges(){
+      const items = getCurrentSelectionLabels().slice();
+      const idx = labelEditorState.selectedLabelIndex;
+      if(idx < 0 || idx >= items.length) return;
+      const it = items[idx];
+      it.text = String(labelTextInput.value || '').trim() || 'Label';
+      it.z = Number(labelRaiseInput.value || 0) || 0;
+      it.scale = Math.max(0.1, Number(labelScaleInput.value || 1) || 1);
+      it.color = normalizeLabelColor(labelColorInput.value || '#00ff88');
+      it.actionType = String(labelActionTypeSelect.value || 'none');
+      it.actionValue = String(labelActionValueInput.value || '').trim();
+      setCurrentSelectionLabels(items);
+      refreshLabelListUI();
+    }
+    [labelTextInput, labelRaiseInput, labelScaleInput, labelColorInput, labelActionTypeSelect, labelActionValueInput].forEach(function(el){
+      if(!el) return;
+      el.addEventListener('input', commitSelectedLabelFormChanges);
+      el.addEventListener('change', commitSelectedLabelFormChanges);
+    });
+
     newLabelBtn.onclick = function(){
       labelEditorState.selectedLabelIndex = -1;
       labelTextInput.value = '';
@@ -2832,6 +3060,7 @@ function buildEditorSavePayload(){
   const buildingKey = firstFilled(meta.building_key, meta.parent, row.building_key, row.name, row.title);
   const unitName = firstFilled(meta.unit_name, meta.name, meta.title, meta.unit, meta.unit_number);
   const labelString = formatLabelAnnotations(getCurrentSelectionLabels());
+  const panoSceneString = (sel.meta && isPanoramaRow(sel.meta)) ? firstFilled(sel.meta.panorama_label_annotations, sel.meta.panorama_labels) : '';
   const distanceString = String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8)));
 
   if(!hasTextValue(buildingKey) || !hasTextValue(unitName)) return null;
@@ -2890,6 +3119,8 @@ function buildEditorSavePayload(){
       labels_3d: labelString,
       text_annotations: labelString,
       annotation_labels: labelString,
+      panorama_label_annotations: panoSceneString,
+      panorama_labels: panoSceneString,
 
       label_max_view_distance_m: distanceString,
       label_view_distance_m: distanceString,
@@ -2948,6 +3179,7 @@ adminApplyBtn.onclick = function(){
   if(!sel || sel.isExterior || !sel.meta) return;
   const meta = sel.meta;
   const labelString = formatLabelAnnotations(getCurrentSelectionLabels());
+  const panoSceneString = (meta && isPanoramaRow(meta)) ? firstFilled(meta.panorama_label_annotations, meta.panorama_labels) : '';
   const distanceString = String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8)));
 
   meta.area = adminAreaInput.value.trim();
@@ -2994,7 +3226,13 @@ adminApplyBtn.onclick = function(){
   meta.labels_3d = labelString;
   meta.text_annotations = labelString;
   meta.annotation_labels = labelString;
-  labelsExportBox.value = labelString;
+  if(isPanoramaRow(meta)){
+    meta.panorama_label_annotations = panoSceneString;
+    meta.panorama_labels = panoSceneString;
+    labelsExportBox.value = panoSceneString || labelString;
+  } else {
+    labelsExportBox.value = labelString;
+  }
 
   meta.label_max_view_distance_m = distanceString;
   meta.label_view_distance_m = distanceString;
@@ -3022,6 +3260,8 @@ adminApplyBtn.onclick = function(){
         const reloaded = await ensureInteriorEntity(sel.bIdx, sel.itemIdx);
         if(thisToken !== panoramaApplyToken) return true;
         if(reloaded) reloaded.show = true;
+        updatePanoramaLabelUiHints();
+        refreshLabelListUI();
         labelEditorStatus.textContent = 'Panorama changed to ' + (item.title || item.key || 'selected view') + '.';
         requestSceneRenderBurst(10);
         return true;
@@ -3317,6 +3557,8 @@ function hideUnitMetaUI(){
         setPanoramaMouseBindings();
         interiorNav.disable();
         setJoystickVisible(false);
+        clampCameraRollZero();
+        updatePanoramaLabelUiHints();
 
         const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
         const fr=viewer.camera.frustum;
