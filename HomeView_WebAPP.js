@@ -846,7 +846,7 @@ async function refreshFutureProjects(bIdx){
       lastY = y;
       const cam = viewer.camera;
       const heading = cam.heading - (dx * headingPerPixel);
-      const pitchRaw = cam.pitch - (dy * pitchPerPixel);
+      const pitchRaw = cam.pitch + (dy * pitchPerPixel);
       const pitch = Math.max(Cesium.Math.toRadians(-89), Math.min(Cesium.Math.toRadians(89), pitchRaw));
       cam.setView({
         destination: cam.positionWC,
@@ -1645,6 +1645,17 @@ async function refreshFutureProjects(bIdx){
     function getCurrentPanoramaSceneKey(sel){
       const item = getActivePanoramaItemForSelection(sel);
       return item ? String(item.key || item.title || '').trim() : '';
+    }
+    function getRawPanoramaSceneAnnotationString(meta){
+      if(!meta) return '';
+      const direct = firstFilled(meta.panorama_label_annotations, meta.panorama_labels);
+      if(hasTextValue(direct)) return direct;
+      const fallbacks = [meta.label_annotations, meta.labels_3d, meta.text_annotations, meta.annotation_labels];
+      for(let i=0;i<fallbacks.length;i++){
+        const raw = String(fallbacks[i] || '').trim();
+        if(raw && raw.indexOf('>>') >= 0) return raw;
+      }
+      return '';
     }
     function parsePanoramaSceneLabelAnnotations(str){
       const out = {};
@@ -2628,7 +2639,7 @@ function fmtMoneyNoDash(n){
       const mapKey = baseKey + '@@sceneMap';
       if(!labelEditorState.cache.has(mapKey)){
         const meta = sel.meta || {};
-        const sceneMap = parsePanoramaSceneLabelAnnotations(firstFilled(meta.panorama_label_annotations, meta.panorama_labels));
+        const sceneMap = parsePanoramaSceneLabelAnnotations(getRawPanoramaSceneAnnotationString(meta));
         if(!Object.keys(sceneMap).length){
           const defaultSceneKey = getCurrentPanoramaSceneKey(sel) || '__default__';
           const legacy = parseLabelAnnotations(firstFilled(meta.label_annotations, meta.labels_3d, meta.text_annotations, meta.annotation_labels));
@@ -2682,10 +2693,11 @@ function fmtMoneyNoDash(n){
           const allScenesString = formatPanoramaSceneLabelAnnotations(sceneMap);
           sel.meta.panorama_label_annotations = allScenesString;
           sel.meta.panorama_labels = allScenesString;
-          sel.meta.label_annotations = sceneString;
-          sel.meta.labels_3d = sceneString;
-          sel.meta.text_annotations = sceneString;
-          sel.meta.annotation_labels = sceneString;
+          sel.meta.current_scene_label_annotations = sceneString;
+          sel.meta.label_annotations = allScenesString;
+          sel.meta.labels_3d = allScenesString;
+          sel.meta.text_annotations = allScenesString;
+          sel.meta.annotation_labels = allScenesString;
           labelsExportBox.value = allScenesString;
           return;
         }
@@ -3076,7 +3088,7 @@ function buildEditorSavePayload(){
   const buildingKey = firstFilled(meta.building_key, meta.parent, row.building_key, row.name, row.title);
   const unitName = firstFilled(meta.unit_name, meta.name, meta.title, meta.unit, meta.unit_number);
   const labelString = formatLabelAnnotations(getCurrentSelectionLabels());
-  const panoSceneString = (sel.meta && isPanoramaRow(sel.meta)) ? firstFilled(sel.meta.panorama_label_annotations, sel.meta.panorama_labels) : '';
+  const panoSceneString = (sel.meta && isPanoramaRow(sel.meta)) ? getRawPanoramaSceneAnnotationString(sel.meta) : '';
   const distanceString = String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8)));
 
   if(!hasTextValue(buildingKey) || !hasTextValue(unitName)) return null;
@@ -3131,10 +3143,11 @@ function buildEditorSavePayload(){
       heating_type: adminHeatingInput.value.trim(),
       community_features: adminCommunityInput.value.trim(),
 
-      label_annotations: labelString,
-      labels_3d: labelString,
-      text_annotations: labelString,
-      annotation_labels: labelString,
+      label_annotations: (sel.meta && isPanoramaRow(sel.meta)) ? panoSceneString : labelString,
+      labels_3d: (sel.meta && isPanoramaRow(sel.meta)) ? panoSceneString : labelString,
+      text_annotations: (sel.meta && isPanoramaRow(sel.meta)) ? panoSceneString : labelString,
+      annotation_labels: (sel.meta && isPanoramaRow(sel.meta)) ? panoSceneString : labelString,
+      current_scene_label_annotations: labelString,
       panorama_label_annotations: panoSceneString,
       panorama_labels: panoSceneString,
 
@@ -3195,7 +3208,7 @@ adminApplyBtn.onclick = function(){
   if(!sel || sel.isExterior || !sel.meta) return;
   const meta = sel.meta;
   const labelString = formatLabelAnnotations(getCurrentSelectionLabels());
-  const panoSceneString = (meta && isPanoramaRow(meta)) ? firstFilled(meta.panorama_label_annotations, meta.panorama_labels) : '';
+  const panoSceneString = (meta && isPanoramaRow(meta)) ? getRawPanoramaSceneAnnotationString(meta) : '';
   const distanceString = String(Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8)));
 
   meta.area = adminAreaInput.value.trim();
@@ -3238,15 +3251,20 @@ adminApplyBtn.onclick = function(){
   meta.heating_type = adminHeatingInput.value.trim();
   meta.community_features = adminCommunityInput.value.trim();
 
-  meta.label_annotations = labelString;
-  meta.labels_3d = labelString;
-  meta.text_annotations = labelString;
-  meta.annotation_labels = labelString;
   if(isPanoramaRow(meta)){
+    meta.current_scene_label_annotations = labelString;
+    meta.label_annotations = panoSceneString || labelString;
+    meta.labels_3d = panoSceneString || labelString;
+    meta.text_annotations = panoSceneString || labelString;
+    meta.annotation_labels = panoSceneString || labelString;
     meta.panorama_label_annotations = panoSceneString;
     meta.panorama_labels = panoSceneString;
     labelsExportBox.value = panoSceneString || labelString;
   } else {
+    meta.label_annotations = labelString;
+    meta.labels_3d = labelString;
+    meta.text_annotations = labelString;
+    meta.annotation_labels = labelString;
     labelsExportBox.value = labelString;
   }
 
