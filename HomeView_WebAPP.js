@@ -813,7 +813,6 @@ async function refreshFutureProjects(bIdx){
     ssc.tiltEventTypes = [];
     panoramaDragController.enable();
   }
-  setExteriorMouseBindings();
 
   function clampCameraRollZero(){
     const cam = viewer.scene.camera;
@@ -888,6 +887,7 @@ async function refreshFutureProjects(bIdx){
       disable(){ enabled = false; end(); }
     };
   })();
+  setExteriorMouseBindings();
 
   // ===== Keyboard/Joystick move =====
   function makeInteriorKeyboardMove(viewer){
