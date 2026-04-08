@@ -221,9 +221,25 @@ function parseFutureProjects(raw){
     })
     .filter(Boolean);
 }
+  function getExplicitItemType(item){
+    const explicit = firstFilled(item && item.category, item && item.type, item && item.kind, item && item.item_type)
+      .toLowerCase()
+      .replace(/\s+/g,'_')
+      .replace(/-/g,'_');
+    if(!explicit) return '';
+    if(explicit.includes('future')) return 'future_project';
+    if(explicit.includes('amenity')) return 'amenity';
+    if(explicit.includes('panorama') || explicit.includes('360')) return 'panorama';
+    if(explicit === 'unit') return 'unit';
+    return explicit;
+  }
+  function isPanoramaRow(item){
+    return getExplicitItemType(item) === 'panorama';
+  }
   function isAmenityRow(item){
     if(!item) return false;
-    const explicit = firstFilled(item.category, item.type, item.kind, item.item_type).toLowerCase();
+    const explicit = getExplicitItemType(item);
+    if (explicit === 'panorama') return false;
     if (explicit.includes('amenity')) return true;
     if (explicit === 'unit') return false;
 
@@ -249,7 +265,7 @@ function parseFutureProjects(raw){
     if (!hasModel && hasBasicAmenityContent) return true;
     return false;
   }
-  function isUnitRow(item){ return !!item && !isAmenityRow(item); }
+  function isUnitRow(item){ return !!item && !isAmenityRow(item) && !isPanoramaRow(item); }
 
   // ========== 3D Tiles ==========
   let GOOGLE_3D_TILES = null;
@@ -575,6 +591,17 @@ function renderChipSection(section, items){
         <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Scale<input id="labelScaleInput" class="ui-input" type="number" value="1" step="0.1" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label>
         <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Label color<input id="labelColorInput" class="ui-input" type="color" value="#00ff88" style="padding:4px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0;height:38px"></label>
       </div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;min-width:0">
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">On click action
+          <select id="labelActionTypeSelect" class="ui-select" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0">
+            <option value="none">None</option>
+            <option value="open_panorama">Open panorama</option>
+          </select>
+        </label>
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Panorama key / title
+          <input id="labelActionValueInput" class="ui-input" type="text" placeholder="e.g. livingroom" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0">
+        </label>
+      </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;min-width:0">
         <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
         <button id="newLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">New label</button>
@@ -593,6 +620,8 @@ function renderChipSection(section, items){
   const labelRaiseInput = labelToolsCard.querySelector('#labelRaiseInput');
   const labelScaleInput = labelToolsCard.querySelector('#labelScaleInput');
   const labelColorInput = labelToolsCard.querySelector('#labelColorInput');
+  const labelActionTypeSelect = labelToolsCard.querySelector('#labelActionTypeSelect');
+  const labelActionValueInput = labelToolsCard.querySelector('#labelActionValueInput');
   const pickLabelBtn = labelToolsCard.querySelector('#pickLabelBtn');
   const newLabelBtn = labelToolsCard.querySelector('#newLabelBtn');
   const deleteLabelBtn = labelToolsCard.querySelector('#deleteLabelBtn');
@@ -760,6 +789,18 @@ async function refreshFutureProjects(bIdx){
     ssc.enableLook=true;
     ssc.lookEventTypes=[Cesium.CameraEventType.LEFT_DRAG];
     ssc.rotateEventTypes=[]; ssc.translateEventTypes=[]; ssc.tiltEventTypes=[];
+  }
+  function setPanoramaMouseBindings(){
+    viewer.scene.camera.constrainedAxis = undefined;
+    ssc.enableRotate = false;
+    ssc.enableTranslate = false;
+    ssc.enableTilt = false;
+    ssc.enableZoom = false;
+    ssc.enableLook = true;
+    ssc.lookEventTypes = [Cesium.CameraEventType.LEFT_DRAG];
+    ssc.rotateEventTypes = [];
+    ssc.translateEventTypes = [];
+    ssc.tiltEventTypes = [];
   }
   setExteriorMouseBindings();
 
@@ -1304,7 +1345,12 @@ async function refreshFutureProjects(bIdx){
           try{
             const blobUrl = await ensureInteriorBlobUrl(bIdx, itemIdx, meta.model_url);
             const finishSelections = customizationSelectionsByKey.get(makeCustomizationSelectionKey(bIdx, itemIdx)) || null;
-            const ent = await createInteriorModel(buildingRow, meta, viewer, blobUrl, finishSelections);
+            let panoramaSelection = panoramaSelectionsByKey.get(makeCustomizationSelectionKey(bIdx, itemIdx)) || null;
+            if(isPanoramaRow(meta) && (!panoramaSelection || !panoramaSelection.url)){
+              panoramaSelection = getPanoramaConfig(meta, buildingRow).defaultItem || null;
+              if(panoramaSelection) panoramaSelectionsByKey.set(makeCustomizationSelectionKey(bIdx, itemIdx), panoramaSelection);
+            }
+            const ent = await createInteriorModel(buildingRow, meta, viewer, blobUrl, finishSelections, panoramaSelection);
             if(!interiorEntitiesByBuilding[bIdx]) interiorEntitiesByBuilding[bIdx]=[];
             interiorEntitiesByBuilding[bIdx][itemIdx] = ent;
             if(ent) ent.show = false;
@@ -1361,6 +1407,8 @@ async function refreshFutureProjects(bIdx){
     let customizationApplyToken = 0;
     let activeCustomizationState = null;
     const customizationSelectionsByKey = new Map();
+    const panoramaSelectionsByKey = new Map();
+    let panoramaApplyToken = 0;
     function makeCustomizationSelectionKey(bIdx, itemIdx){ return String(bIdx) + ':' + String(itemIdx); }
 
     function parseBoolish(v){
@@ -1427,6 +1475,106 @@ async function refreshFutureProjects(bIdx){
         out.push({ label: opt.label || decodeTextureLabelFromUrl(key), url: key, value: key });
       });
       return out;
+    }
+
+
+    function parsePanoramaItems(raw){
+      if(raw == null) return [];
+      const src = String(raw).trim();
+      if(!src) return [];
+      return src.split(/\r?\n|;/).join('|').split('|').map(function(chunk, idx){
+        const s = String(chunk || '').trim();
+        if(!s) return null;
+        const parts = s.split('::').map(function(x){ return String(x || '').trim(); });
+        let key = '';
+        let title = '';
+        let url = '';
+        if(parts.length >= 3){
+          key = parts[0];
+          title = parts[1];
+          url = parts.slice(2).join('::');
+        } else if(parts.length === 2){
+          title = parts[0];
+          url = parts[1];
+          key = title;
+        } else {
+          url = parts[0];
+          title = 'Panorama ' + (idx + 1);
+          key = title;
+        }
+        if(!url) return null;
+        key = (key || title || ('panorama_' + (idx + 1))).trim();
+        title = (title || key || ('Panorama ' + (idx + 1))).trim();
+        return { key:key, title:title, url:url.trim() };
+      }).filter(Boolean);
+    }
+
+    function getPanoramaConfig(meta, row){
+      const items = parsePanoramaItems(firstFilled(
+        meta && meta.panorama_items,
+        meta && meta.panorama_item,
+        meta && meta.panorama_images,
+        meta && meta.panorama_urls,
+        row && row.panorama_items,
+        row && row.panorama_item,
+        row && row.panorama_images,
+        row && row.panorama_urls
+      ));
+      return {
+        items: items,
+        defaultItem: items[0] || null
+      };
+    }
+
+    function resolvePanoramaItem(meta, row, actionValue){
+      const cfg = getPanoramaConfig(meta, row);
+      const items = cfg.items || [];
+      const raw = String(actionValue || '').trim();
+      if(!items.length) return null;
+      if(!raw) return cfg.defaultItem || items[0];
+      const key = raw.toLowerCase();
+      return items.find(function(it){
+        return String(it.key || '').toLowerCase() === key
+          || String(it.title || '').toLowerCase() === key
+          || String(it.url || '').toLowerCase() === key;
+      }) || cfg.defaultItem || items[0];
+    }
+
+    function patchRawGltfTextureForAll(gltf, textureUrl){
+      if(!gltf || !textureUrl) return false;
+      const materials = Array.isArray(gltf.materials) ? gltf.materials : null;
+      const textures = Array.isArray(gltf.textures) ? gltf.textures : null;
+      if(!materials || !textures) return false;
+      if(!Array.isArray(gltf.images)) gltf.images = [];
+      const images = gltf.images;
+      let changed = false;
+
+      materials.forEach(function(sourceMaterial){
+        if(!sourceMaterial) return;
+        const clonedMaterial = cloneJson(sourceMaterial);
+        const pbr = clonedMaterial && clonedMaterial.pbrMetallicRoughness;
+        const texInfo = pbr && pbr.baseColorTexture;
+        if(!texInfo || typeof texInfo.index !== 'number') return;
+        const sourceTexture = textures[texInfo.index];
+        if(!sourceTexture) return;
+        const clonedTexture = cloneJson(sourceTexture) || {};
+        let clonedImage = {};
+        if(typeof sourceTexture.source === 'number' && images[sourceTexture.source]){
+          clonedImage = cloneJson(images[sourceTexture.source]) || {};
+        }
+        delete clonedImage.bufferView;
+        delete clonedImage.mimeType;
+        clonedImage.uri = textureUrl;
+        images.push(clonedImage);
+        const newImageIdx = images.length - 1;
+        clonedTexture.source = newImageIdx;
+        textures.push(clonedTexture);
+        texInfo.index = textures.length - 1;
+        clonedMaterial.pbrMetallicRoughness = pbr;
+        sourceMaterial.pbrMetallicRoughness = clonedMaterial.pbrMetallicRoughness;
+        changed = true;
+      });
+      return changed;
     }
 
     function getCustomizationConfig(meta, row){
@@ -1783,11 +1931,14 @@ async function refreshFutureProjects(bIdx){
       return changed;
     }
 
-    const applyFinishSelectionsToRawGltf = (globalThis.applyFinishSelectionsToRawGltf = function applyFinishSelectionsToRawGltf(gltf, finishSelections){
-      if(!gltf || !finishSelections) return false;
+    const applyVisualSelectionsToRawGltf = (globalThis.applyVisualSelectionsToRawGltf = function applyVisualSelectionsToRawGltf(gltf, finishSelections, panoramaSelection){
+      if(!gltf) return false;
       let changed = false;
-      if(finishSelections.kafpoosh) changed = patchRawGltfTextureForObject(gltf, 'Kafpoosh', finishSelections.kafpoosh) || changed;
-      if(finishSelections.kabinet) changed = patchRawGltfTextureForObject(gltf, 'Kabinet', finishSelections.kabinet) || changed;
+      if(panoramaSelection && panoramaSelection.url){
+        changed = patchRawGltfTextureForAll(gltf, panoramaSelection.url) || changed;
+      }
+      if(finishSelections && finishSelections.kafpoosh) changed = patchRawGltfTextureForObject(gltf, 'Kafpoosh', finishSelections.kafpoosh) || changed;
+      if(finishSelections && finishSelections.kabinet) changed = patchRawGltfTextureForObject(gltf, 'Kabinet', finishSelections.kabinet) || changed;
       return changed;
     });
 
@@ -2296,7 +2447,16 @@ function fmtMoneyNoDash(n){
         const z = Number.isFinite(posBits[2]) ? posBits[2] : 0;
         const scale = Number(bits[2]);
         const color = (bits[3]||'#00ff88').trim() || '#00ff88';
-        return { text:text||'Label', x, y, z, scale:Number.isFinite(scale)&&scale>0?scale:1, color };
+        const actionType = String(bits[4] || 'none').trim() || 'none';
+        const actionValue = String(bits.slice(5).join('|') || '').trim();
+        return {
+          text:text||'Label',
+          x, y, z,
+          scale:Number.isFinite(scale)&&scale>0?scale:1,
+          color,
+          actionType,
+          actionValue
+        };
       }).filter(Boolean);
     }
     function formatLabelAnnotations(items){
@@ -2305,7 +2465,14 @@ function fmtMoneyNoDash(n){
         const y = Number(it.y||0).toFixed(2).replace(/\.00$/,'');
         const z = Number(it.z||0).toFixed(2).replace(/\.00$/,'');
         const sc = Number(it.scale||1).toFixed(2).replace(/\.00$/,'');
-        return [String(it.text||'Label').replace(/[;|]/g,' ').trim(), [x,y,z].join(','), sc, it.color||'#00ff88'].join('|');
+        return [
+          String(it.text||'Label').replace(/[;|]/g,' ').trim(),
+          [x,y,z].join(','),
+          sc,
+          it.color||'#00ff88',
+          String(it.actionType||'none').replace(/[;|]/g,' ').trim() || 'none',
+          String(it.actionValue||'').replace(/[;]/g,' ').trim()
+        ].join('|');
       }).join('; ');
     }
     function normalizeLabelColor(v){
@@ -2420,6 +2587,11 @@ function fmtMoneyNoDash(n){
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
             distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, getLabelMaxViewDistanceM(sel)),
             scale: 1.0
+          },
+          properties: {
+            hvLabelActionType: String(it.actionType || 'none'),
+            hvLabelActionValue: String(it.actionValue || ''),
+            hvLabelText: String(it.text || 'Label')
           }
         });
         labelEditorState.entities.push(e);
@@ -2434,13 +2606,18 @@ function fmtMoneyNoDash(n){
         btn.className='ui-btn';
         btn.style.cssText='text-align:left;border-radius:10px;padding:8px;cursor:pointer';
         if(idx===labelEditorState.selectedLabelIndex) btn.style.background='#eef6ff';
-        btn.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div style="font-weight:600">'+(it.text||('Label '+(idx+1)))+'</div><div style="width:14px;height:14px;border-radius:999px;border:1px solid #bbb;flex:0 0 auto;background:'+(it.color||'#00ff88')+'"></div></div><div style="font-size:12px;opacity:.8">x '+Number(it.x).toFixed(2)+' • y '+Number(it.y).toFixed(2)+' • z '+Number(it.z).toFixed(2)+' • scale '+Number(it.scale||1).toFixed(2)+'</div>';
+        const actionNote = (it.actionType && it.actionType !== 'none')
+          ? (' • action ' + it.actionType + (it.actionValue ? ' → ' + it.actionValue : ''))
+          : '';
+        btn.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div style="font-weight:600">'+(it.text||('Label '+(idx+1)))+'</div><div style="width:14px;height:14px;border-radius:999px;border:1px solid #bbb;flex:0 0 auto;background:'+(it.color||'#00ff88')+'"></div></div><div style="font-size:12px;opacity:.8">x '+Number(it.x).toFixed(2)+' • y '+Number(it.y).toFixed(2)+' • z '+Number(it.z).toFixed(2)+' • scale '+Number(it.scale||1).toFixed(2)+ actionNote +'</div>';
         btn.onclick=function(){
           labelEditorState.selectedLabelIndex = idx;
           labelTextInput.value = it.text||'';
           labelRaiseInput.value = Number(it.z||0).toFixed(2).replace(/\.00$/,'');
           labelScaleInput.value = Number(it.scale||1).toFixed(2).replace(/\.00$/,'');
           if(labelColorInput) labelColorInput.value = normalizeLabelColor(it.color || '#00ff88');
+          if(labelActionTypeSelect) labelActionTypeSelect.value = String(it.actionType || 'none');
+          if(labelActionValueInput) labelActionValueInput.value = String(it.actionValue || '');
           labelEditorStatus.textContent = 'Selected label #' + (idx+1) + ' — position is already stored; click Pick label position to move it.';
           refreshLabelListUI();
         };
@@ -2523,6 +2700,8 @@ function fmtMoneyNoDash(n){
       labelRaiseInput.value = '0';
       labelScaleInput.value = '1';
       if(labelColorInput) labelColorInput.value = '#00ff88';
+      if(labelActionTypeSelect) labelActionTypeSelect.value = 'none';
+      if(labelActionValueInput) labelActionValueInput.value = '';
       labelEditorStatus.textContent = 'New label ready — click Pick label position.';
       refreshLabelListUI();
     };
@@ -2597,7 +2776,9 @@ function fmtMoneyNoDash(n){
         y: Number(local.y)||0,
         z: (Number(local.z)||0) + (Number(labelRaiseInput.value)||0),
         scale: Number(labelScaleInput.value)>0 ? Number(labelScaleInput.value) : 1,
-        color: normalizeLabelColor(labelColorInput && labelColorInput.value)
+        color: normalizeLabelColor(labelColorInput && labelColorInput.value),
+        actionType: String(labelActionTypeSelect && labelActionTypeSelect.value || 'none').trim() || 'none',
+        actionValue: String(labelActionValueInput && labelActionValueInput.value || '').trim()
       };
       if(idx>=0 && idx<items.length){ items[idx] = item; }
       else { items.push(item); labelEditorState.selectedLabelIndex = items.length-1; }
@@ -2824,14 +3005,57 @@ adminApplyBtn.onclick = function(){
   updateView(Number(selectBox.value));
 };
 
+
+    async function applyPanoramaSelectionForCurrent(actionValue){
+      const sel = labelEditorState.currentSelection;
+      if(!sel || sel.isExterior || !sel.meta || !isPanoramaRow(sel.meta)) return false;
+      const item = resolvePanoramaItem(sel.meta, sel.row, actionValue);
+      if(!item || !item.url) return false;
+
+      const key = makeCustomizationSelectionKey(sel.bIdx, sel.itemIdx);
+      panoramaSelectionsByKey.set(key, item);
+
+      const thisToken = ++panoramaApplyToken;
+      beginViewLoad('Loading panorama...');
+      try{
+        destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: true, silent: true });
+        const reloaded = await ensureInteriorEntity(sel.bIdx, sel.itemIdx);
+        if(thisToken !== panoramaApplyToken) return true;
+        if(reloaded) reloaded.show = true;
+        labelEditorStatus.textContent = 'Panorama changed to ' + (item.title || item.key || 'selected view') + '.';
+        requestSceneRenderBurst(10);
+        return true;
+      } catch(err){
+        console.warn('Panorama apply failed:', err);
+        labelEditorStatus.textContent = 'Could not load that panorama.';
+        return false;
+      } finally {
+        if(thisToken === panoramaApplyToken) endViewLoad();
+      }
+    }
+
+    async function handleInteractiveLabelActionFromPick(picked){
+      const ent = picked && picked.id ? picked.id : null;
+      const props = ent && ent.properties ? ent.properties : null;
+      if(!props) return false;
+      const actionType = props.hvLabelActionType && props.hvLabelActionType.getValue ? props.hvLabelActionType.getValue() : '';
+      const actionValue = props.hvLabelActionValue && props.hvLabelActionValue.getValue ? props.hvLabelActionValue.getValue() : '';
+      if(!actionType || actionType === 'none') return false;
+      if(actionType === 'open_panorama'){
+        return await applyPanoramaSelectionForCurrent(actionValue);
+      }
+      return false;
+    }
+
     // ===== Picking (POI tooltip) =====
     const handler=new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
-    handler.setInputAction(function (m){
+    handler.setInputAction(async function (m){
       if(labelEditorState.editMode && labelEditorState.pendingPick){
         const used = handleLabelPlacement(m.position);
         if(used){ tip.style.display='none'; return; }
       }
       const picked=viewer.scene.pick(m.position);
+      if(await handleInteractiveLabelActionFromPick(picked)){ tip.style.display='none'; return; }
       if(!picked || !picked.id || !poiIndexById.has(picked.id.id)){ tip.style.display='none'; return; }
       const ent=picked.id, props=ent.properties||{};
       const nm = props.name&&props.name.getValue ? props.name.getValue() : (ent.name||'');
@@ -2854,9 +3078,12 @@ adminApplyBtn.onclick = function(){
       const list=interiorMetaByBuilding[idx]||[];
       list.forEach((u,k)=>{
         const o2=document.createElement('option');
-        const amenity = isAmenityRow(u);
-        o2.value=(amenity ? 'amenity:' : 'unit:')+k;
-        o2.textContent=getItemDisplayName(u, (amenity ? 'Amenity #' : 'Unit #')+(k+1));
+        const panorama = isPanoramaRow(u);
+        const amenity = !panorama && isAmenityRow(u);
+        const prefix = panorama ? 'panorama:' : (amenity ? 'amenity:' : 'unit:');
+        const fallback = panorama ? 'Panorama #' : (amenity ? 'Amenity #' : 'Unit #');
+        o2.value = prefix + k;
+        o2.textContent = getItemDisplayName(u, fallback + (k+1));
         viewSelect.appendChild(o2);
       });
       viewSelect.value='exterior';
@@ -2958,11 +3185,12 @@ function hideUnitMetaUI(){
       const selectedIndex=Number(selectedParts[1]||0);
       const selectedMeta=(interiorMetaByBuilding[idx]||[])[selectedIndex]||null;
       const selectedIsAmenity = !isExterior && selectedKind==='amenity' && !!selectedMeta;
-      currentMode = isExterior ? 'exterior' : (selectedIsAmenity ? 'amenity' : 'interior');
+      const selectedIsPanorama = !isExterior && selectedKind==='panorama' && !!selectedMeta;
+      currentMode = isExterior ? 'exterior' : (selectedIsPanorama ? 'panorama' : (selectedIsAmenity ? 'amenity' : 'interior'));
       labelEditorState.currentSelection = { bIdx: idx, kind: selectedKind, itemIdx: selectedIndex, meta: selectedMeta, row: row, isExterior: isExterior };
 
       const thisSwitchToken = ++interiorSwitchToken;
-      const wantsInteriorModel = !isExterior && !!selectedMeta && hasTextValue(selectedMeta.model_url) && (selectedKind==='unit' || selectedKind==='amenity');
+      const wantsInteriorModel = !isExterior && !!selectedMeta && hasTextValue(selectedMeta.model_url) && (selectedKind==='unit' || selectedKind==='amenity' || selectedKind==='panorama');
 
       stopCameraTracking();
       modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&isExterior);
@@ -2986,7 +3214,7 @@ function hideUnitMetaUI(){
       }
 
       (interiorEntitiesByBuilding[idx]||[]).forEach((ent,k)=>{
-        if(ent) ent.show = !!activeInteriorEntity && (selectedIndex===k) && (selectedKind==='unit' || selectedKind==='amenity');
+        if(ent) ent.show = !!activeInteriorEntity && (selectedIndex===k) && (selectedKind==='unit' || selectedKind==='amenity' || selectedKind==='panorama');
       });
 
       if(wantsInteriorModel && !activeInteriorEntity){
@@ -3060,6 +3288,63 @@ function hideUnitMetaUI(){
 
         mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
         updateCommute(idx);
+      } else if (selectedIsPanorama) {
+        const k=selectedIndex;
+        const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
+        const meta=selectedMeta||{};
+        const panoCfg = getPanoramaConfig(meta, row);
+        const activePano = panoramaSelectionsByKey.get(makeCustomizationSelectionKey(idx, k)) || panoCfg.defaultItem || null;
+
+        if(ent){
+          const target=ent.position.getValue(Cesium.JulianDate.now());
+          const camHead=Cesium.Math.toRadians(
+            parseFirstNumber(
+              meta.camera_heading != null
+                ? meta.camera_heading
+                : meta.heading != null
+                  ? meta.heading
+                  : row.heading
+            ) || 0
+          );
+          const camPitch=Cesium.Math.toRadians(parseFirstNumber(meta.camera_pitch)||0);
+          const range = Math.max(0.01, parseFirstNumber(meta.camera_distance) || 0.1);
+
+          viewer.scene.camera.lookAt(target, new Cesium.HeadingPitchRange(camHead,camPitch,range));
+          viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+          requestSceneRender();
+        }
+
+        setPanoramaMouseBindings();
+        interiorNav.disable();
+        setJoystickVisible(false);
+
+        const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
+        const fr=viewer.camera.frustum;
+        if(fr && 'fov' in fr) fr.fov = saved * Math.PI/180;
+        fovRange.value = String(saved);
+        fovValEl.textContent = saved;
+
+        title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
+        hideUnitMetaUI();
+        hideFinishCard();
+        if(isEditorAdmin()) populateAdminEditor(selectedMeta, row);
+        const panoNames = panoCfg.items.map(function(it){ return it.title || it.key; }).filter(Boolean);
+        const dBase = getItemDescription(selectedMeta, row).trim();
+        const dExtra = activePano ? ('Current panorama: ' + (activePano.title || activePano.key || '—')) : '';
+        const dList = panoNames.length ? ('Available panoramas: ' + panoNames.join(', ')) : '';
+        const d = [dBase, dExtra, dList].filter(Boolean).join('\n');
+        descBox.style.display = d ? 'block' : 'none';
+        descBox.textContent = d;
+
+        priceCanvas.style.display='none';
+        loanCard.style.display='none';
+        compareCard.style.display='none';
+        similarCard.style.display='none';
+        priceCard.style.display='none';
+        commuteCard.style.display='none';
+        if (typeof compareModal !== 'undefined' && compareModal) compareModal.style.display='none';
+
+        mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
       } else if (selectedIsAmenity) {
         const k=selectedIndex;
         const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
@@ -3211,7 +3496,7 @@ function hideUnitMetaUI(){
     });
   }
 
-  async function createInteriorModel(bRow,uRow,viewer,modelUrl,finishSelections){
+  async function createInteriorModel(bRow,uRow,viewer,modelUrl,finishSelections,panoramaSelection){
     const baseLon=toNum(bRow.lng), baseLat=toNum(bRow.lat), baseH=toNum(bRow.height)||20;
     const baseSurfaceH = await getSurfaceHeight(baseLon, baseLat);
     const offE=toNum(uRow.offset_east_m)||0, offN=toNum(uRow.offset_north_m)||0, offU=toNum(uRow.offset_up_m)||0;
@@ -3246,7 +3531,15 @@ function hideUnitMetaUI(){
       allowPicking:true,
       gltfCallback:function(gltf){
         hvRawGltf = gltf;
-        try{ const fn=(typeof applyFinishSelectionsToRawGltf==='function'?applyFinishSelectionsToRawGltf:(globalThis&&typeof globalThis.applyFinishSelectionsToRawGltf==='function'?globalThis.applyFinishSelectionsToRawGltf:null)); if(fn) fn(gltf, finishSelections || null); else console.warn('Raw glTF finish patch skipped: applyFinishSelectionsToRawGltf not available'); }catch(err){ console.warn('Raw glTF finish patch failed:', err); }
+        try{
+          const fn = (typeof applyVisualSelectionsToRawGltf==='function'
+            ? applyVisualSelectionsToRawGltf
+            : (globalThis && typeof globalThis.applyVisualSelectionsToRawGltf==='function'
+              ? globalThis.applyVisualSelectionsToRawGltf
+              : null));
+          if(fn) fn(gltf, finishSelections || null, panoramaSelection || null);
+          else console.warn('Raw glTF visual patch skipped: applyVisualSelectionsToRawGltf not available');
+        }catch(err){ console.warn('Raw glTF visual patch failed:', err); }
       }
     });
     try{ modelPrimitive.__hvRawGltf = hvRawGltf; }catch(_){ }
