@@ -828,34 +828,25 @@ async function refreshFutureProjects(bIdx){
     let enabled = false;
     let dragging = false;
     let pointerId = null;
-    let axisLock = '';
-    let startX = 0, startY = 0, lastX = 0, lastY = 0;
-    const lockThreshold = 5;
+    let lastX = 0, lastY = 0;
     const headingPerPixel = 0.0035;
     const pitchPerPixel = 0.0030;
     const el = viewer.scene.canvas;
 
     function beginAt(x, y){
       dragging = true;
-      axisLock = '';
-      startX = lastX = x;
-      startY = lastY = y;
+      lastX = x;
+      lastY = y;
     }
     function moveTo(x, y){
       if(!enabled || !dragging) return;
-      const totalDx = x - startX;
-      const totalDy = y - startY;
-      if(!axisLock){
-        if(Math.abs(totalDx) < lockThreshold && Math.abs(totalDy) < lockThreshold) return;
-        axisLock = Math.abs(totalDx) >= Math.abs(totalDy) ? 'horizontal' : 'vertical';
-      }
       const dx = x - lastX;
       const dy = y - lastY;
       lastX = x;
       lastY = y;
       const cam = viewer.camera;
-      const heading = cam.heading - (axisLock === 'horizontal' ? dx * headingPerPixel : 0);
-      const pitchRaw = cam.pitch - (axisLock === 'vertical' ? dy * pitchPerPixel : 0);
+      const heading = cam.heading - (dx * headingPerPixel);
+      const pitchRaw = cam.pitch - (dy * pitchPerPixel);
       const pitch = Math.max(Cesium.Math.toRadians(-89), Math.min(Cesium.Math.toRadians(89), pitchRaw));
       cam.setView({
         destination: cam.positionWC,
@@ -865,10 +856,10 @@ async function refreshFutureProjects(bIdx){
       requestSceneRender();
     }
     function end(){
+      const capturedPointerId = pointerId;
       dragging = false;
       pointerId = null;
-      axisLock = '';
-      try{ el.releasePointerCapture && pointerId != null && el.releasePointerCapture(pointerId); }catch(_){ }
+      try{ el.releasePointerCapture && capturedPointerId != null && el.releasePointerCapture(capturedPointerId); }catch(_){ }
     }
 
     el.style.touchAction = 'none';
@@ -908,7 +899,7 @@ async function refreshFutureProjects(bIdx){
     el.addEventListener('lostpointercapture', function(){ end(); }, { passive:true });
 
     return {
-      enable(){ enabled = true; dragging = false; axisLock = ''; },
+      enable(){ enabled = true; dragging = false; },
       disable(){ enabled = false; end(); }
     };
   })();
