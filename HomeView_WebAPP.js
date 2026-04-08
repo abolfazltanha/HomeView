@@ -782,6 +782,7 @@ async function refreshFutureProjects(bIdx){
   function setExteriorMouseBindings(){
     panoramaDragController.disable();
     viewer.scene.camera.constrainedAxis = Cesium.Cartesian3.UNIT_Z;
+    ssc.enableInputs = true;
     ssc.enableRotate = true;
     ssc.enableTranslate = false;
     ssc.enableTilt = true;
@@ -795,6 +796,7 @@ async function refreshFutureProjects(bIdx){
   function setInteriorMouseBindings(){
     panoramaDragController.disable();
     viewer.scene.camera.constrainedAxis = undefined;
+    ssc.enableInputs = true;
     ssc.enableRotate=false; ssc.enableTranslate=false; ssc.enableTilt=false;
     ssc.enableLook=true;
     ssc.lookEventTypes=[Cesium.CameraEventType.LEFT_DRAG];
@@ -802,6 +804,7 @@ async function refreshFutureProjects(bIdx){
   }
   function setPanoramaMouseBindings(){
     viewer.scene.camera.constrainedAxis = undefined;
+    ssc.enableInputs = false;
     ssc.enableRotate = false;
     ssc.enableTranslate = false;
     ssc.enableTilt = false;
@@ -824,41 +827,32 @@ async function refreshFutureProjects(bIdx){
   const panoramaDragController = (function(){
     let enabled = false;
     let dragging = false;
+    let pointerId = null;
     let axisLock = '';
     let startX = 0, startY = 0, lastX = 0, lastY = 0;
     const lockThreshold = 5;
     const headingPerPixel = 0.0035;
     const pitchPerPixel = 0.0030;
+    const el = viewer.scene.canvas;
 
-    function getPoint(evt){
-      const t = (evt.touches && evt.touches[0]) || (evt.changedTouches && evt.changedTouches[0]) || evt;
-      return t ? { x: t.clientX, y: t.clientY } : null;
-    }
-    function begin(evt){
-      if(!enabled) return;
-      if(evt.touches && evt.touches.length > 1) return;
-      const p = getPoint(evt);
-      if(!p) return;
+    function beginAt(x, y){
       dragging = true;
       axisLock = '';
-      startX = lastX = p.x;
-      startY = lastY = p.y;
-      evt.preventDefault();
+      startX = lastX = x;
+      startY = lastY = y;
     }
-    function move(evt){
+    function moveTo(x, y){
       if(!enabled || !dragging) return;
-      const p = getPoint(evt);
-      if(!p) return;
-      const totalDx = p.x - startX;
-      const totalDy = p.y - startY;
+      const totalDx = x - startX;
+      const totalDy = y - startY;
       if(!axisLock){
         if(Math.abs(totalDx) < lockThreshold && Math.abs(totalDy) < lockThreshold) return;
         axisLock = Math.abs(totalDx) >= Math.abs(totalDy) ? 'horizontal' : 'vertical';
       }
-      const dx = p.x - lastX;
-      const dy = p.y - lastY;
-      lastX = p.x;
-      lastY = p.y;
+      const dx = x - lastX;
+      const dy = y - lastY;
+      lastX = x;
+      lastY = y;
       const cam = viewer.camera;
       const heading = cam.heading - (axisLock === 'horizontal' ? dx * headingPerPixel : 0);
       const pitchRaw = cam.pitch - (axisLock === 'vertical' ? dy * pitchPerPixel : 0);
@@ -867,23 +861,54 @@ async function refreshFutureProjects(bIdx){
         destination: cam.positionWC,
         orientation: { heading: heading, pitch: pitch, roll: 0.0 }
       });
-      evt.preventDefault();
+      clampCameraRollZero();
       requestSceneRender();
     }
     function end(){
       dragging = false;
+      pointerId = null;
       axisLock = '';
+      try{ el.releasePointerCapture && pointerId != null && el.releasePointerCapture(pointerId); }catch(_){ }
     }
-    const el = viewer.scene.canvas;
-    el.addEventListener('mousedown', begin, { passive:false });
-    window.addEventListener('mousemove', move, { passive:false });
-    window.addEventListener('mouseup', end, { passive:true });
-    el.addEventListener('touchstart', begin, { passive:false });
-    window.addEventListener('touchmove', move, { passive:false });
-    window.addEventListener('touchend', end, { passive:true });
-    window.addEventListener('touchcancel', end, { passive:true });
+
+    el.style.touchAction = 'none';
+
+    el.addEventListener('pointerdown', function(evt){
+      if(!enabled) return;
+      if(evt.pointerType === 'touch' && !evt.isPrimary) return;
+      pointerId = evt.pointerId;
+      try{ el.setPointerCapture && el.setPointerCapture(pointerId); }catch(_){ }
+      beginAt(evt.clientX, evt.clientY);
+      evt.preventDefault();
+      evt.stopPropagation();
+    }, { passive:false });
+
+    el.addEventListener('pointermove', function(evt){
+      if(!enabled || !dragging) return;
+      if(pointerId != null && evt.pointerId !== pointerId) return;
+      moveTo(evt.clientX, evt.clientY);
+      evt.preventDefault();
+      evt.stopPropagation();
+    }, { passive:false });
+
+    el.addEventListener('pointerup', function(evt){
+      if(pointerId != null && evt.pointerId !== pointerId) return;
+      end();
+      evt.preventDefault();
+      evt.stopPropagation();
+    }, { passive:false });
+
+    el.addEventListener('pointercancel', function(evt){
+      if(pointerId != null && evt.pointerId !== pointerId) return;
+      end();
+      evt.preventDefault();
+      evt.stopPropagation();
+    }, { passive:false });
+
+    el.addEventListener('lostpointercapture', function(){ end(); }, { passive:true });
+
     return {
-      enable(){ enabled = true; },
+      enable(){ enabled = true; dragging = false; axisLock = ''; },
       disable(){ enabled = false; end(); }
     };
   })();
