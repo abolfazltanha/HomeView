@@ -229,13 +229,32 @@ function parseFutureProjects(raw){
     if(!explicit) return '';
     if(explicit.includes('future')) return 'future_project';
     if(explicit.includes('amenity')) return 'amenity';
+    if((explicit.includes('embedded') || explicit.includes('cutout') || explicit.includes('terrain_cut') || explicit.includes('cesium_cut')) && (explicit.includes('panorama') || explicit.includes('360'))) return 'embedded_panorama';
+    if((explicit.includes('embedded') || explicit.includes('cutout') || explicit.includes('terrain_cut') || explicit.includes('cesium_cut')) && explicit.includes('unit')) return 'embedded_unit';
     if(explicit.includes('panorama') || explicit.includes('360')) return 'panorama';
     if(explicit === 'unit') return 'unit';
     return explicit;
   }
   function isPanoramaRow(item){
-    return getExplicitItemType(item) === 'panorama';
+    const explicit = getExplicitItemType(item);
+    return explicit === 'panorama' || explicit === 'embedded_panorama';
   }
+  function isEmbeddedInteriorRow(item){
+    const explicit = getExplicitItemType(item);
+    if(explicit === 'embedded_unit' || explicit === 'embedded_panorama') return true;
+    const raw = firstFilled(
+      item && item.clip_mode,
+      item && item.clipping_mode,
+      item && item.terrain_clip_mode,
+      item && item.cesium_clip_mode,
+      item && item.clip_in_cesium,
+      item && item.use_clipping,
+      item && item.embedded_in_cesium,
+      item && item.model_embed_type
+    ).toLowerCase();
+    return !!raw && /clip|cut|embedded|inset|terrain/.test(raw);
+  }
+
   function isAmenityRow(item){
     if(!item) return false;
     const explicit = getExplicitItemType(item);
@@ -321,6 +340,116 @@ function parseFutureProjects(raw){
     const origin = Cesium.Cartesian3.fromDegrees(lon,lat,h);
     const enu = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
     return Cesium.Matrix4.multiplyByPoint(enu, new Cesium.Cartesian3(offE,offN,offU), new Cesium.Cartesian3());
+  }
+
+
+  function requestSceneRender(){
+    try{ viewer.scene.requestRender(); }catch(_){ }
+  }
+
+  function requestSceneRenderBurst(count = 3, delayMs = 16){
+    let remaining = Math.max(1, count | 0);
+    function tick(){
+      requestSceneRender();
+      remaining -= 1;
+      if (remaining > 0) {
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(tick);
+        else setTimeout(tick, delayMs);
+      }
+    }
+    tick();
+  }
+
+  function setCameraCollision(enabled){
+    try{
+      if(viewer && viewer.scene && viewer.scene.screenSpaceCameraController){
+        viewer.scene.screenSpaceCameraController.enableCollisionDetection = !!enabled;
+      }
+    }catch(_){ }
+  }
+
+  let activeInteriorClipTiles = null;
+  let activeInteriorClipGlobe = null;
+  let activeInteriorClipSignature = '';
+
+  function parseClipPolygonDegrees(raw){
+    const s = String(raw || '').trim();
+    if(!s) return [];
+    const nums = (s.match(/-?\d+(?:\.\d+)?/g) || []).map(function(v){ return Number(v); }).filter(Number.isFinite);
+    if(nums.length < 6) return [];
+    if(nums.length % 2 !== 0) nums.pop();
+    return nums;
+  }
+  function getInteriorClipPolygonDegrees(meta, row){
+    const raw = firstFilled(
+      meta && meta.clipping_polygon,
+      meta && meta.clip_polygon,
+      meta && meta.clip_polygon_degrees,
+      meta && meta.terrain_clip_polygon,
+      meta && meta.cesium_clip_polygon,
+      meta && meta.ground_clip_polygon,
+      meta && meta.building_clip_polygon,
+      meta && meta.clip_footprint,
+      meta && meta.footprint_polygon,
+      row && row.clipping_polygon,
+      row && row.clip_polygon,
+      row && row.clip_polygon_degrees,
+      row && row.terrain_clip_polygon,
+      row && row.cesium_clip_polygon,
+      row && row.ground_clip_polygon,
+      row && row.building_clip_polygon,
+      row && row.clip_footprint,
+      row && row.footprint_polygon
+    );
+    return parseClipPolygonDegrees(raw);
+  }
+  function disableInteriorClip(){
+    activeInteriorClipSignature = '';
+    if(activeInteriorClipTiles) activeInteriorClipTiles.enabled = false;
+    if(activeInteriorClipGlobe) activeInteriorClipGlobe.enabled = false;
+    requestSceneRenderBurst(2);
+  }
+  function enableInteriorClipForSelection(meta, row){
+    if(!isEmbeddedInteriorRow(meta)){
+      disableInteriorClip();
+      return false;
+    }
+    const degrees = getInteriorClipPolygonDegrees(meta, row);
+    if(!degrees.length || degrees.length < 6 || !GOOGLE_3D_TILES){
+      disableInteriorClip();
+      return false;
+    }
+    const signature = degrees.join(',');
+    if(signature === activeInteriorClipSignature && activeInteriorClipTiles){
+      activeInteriorClipTiles.enabled = true;
+      if(activeInteriorClipGlobe) activeInteriorClipGlobe.enabled = true;
+      requestSceneRenderBurst(2);
+      return true;
+    }
+    activeInteriorClipTiles = new Cesium.ClippingPolygonCollection({
+      polygons:[new Cesium.ClippingPolygon({ positions: Cesium.Cartesian3.fromDegreesArray(degrees) })],
+      enabled:true,
+      inverse:false
+    });
+    GOOGLE_3D_TILES.clippingPolygons = activeInteriorClipTiles;
+    if(viewer && viewer.scene && viewer.scene.globe){
+      activeInteriorClipGlobe = new Cesium.ClippingPolygonCollection({
+        polygons:[new Cesium.ClippingPolygon({ positions: Cesium.Cartesian3.fromDegreesArray(degrees) })],
+        enabled:true,
+        inverse:false
+      });
+      viewer.scene.globe.clippingPolygons = activeInteriorClipGlobe;
+    }
+    activeInteriorClipSignature = signature;
+    requestSceneRenderBurst(2);
+    return true;
+  }
+  function syncInteriorClipForSelection(meta, row, isExterior){
+    if(isExterior || !meta){
+      disableInteriorClip();
+      return false;
+    }
+    return enableInteriorClipForSelection(meta, row);
   }
 
   function requestSceneRender(){
@@ -1336,16 +1465,6 @@ async function refreshFutureProjects(bIdx){
     let mobileViewChangeTimer = null;
     let viewLoadLockCount = 0;
 
-    function requestSceneRenderBurst(count){
-      let remaining = Math.max(1, count|0);
-      function tick(){
-        requestSceneRender();
-        remaining -= 1;
-        if(remaining > 0) requestAnimationFrame(tick);
-      }
-      tick();
-    }
-
     function setSelectionControlsDisabled(disabled, message){
       const flag = !!disabled;
       selectBox.disabled = flag;
@@ -2288,7 +2407,7 @@ function fmtMoneyNoDash(n){
 }
 
     btnAddCurrent.onclick=()=>{
-      if(!viewSelect.value.startsWith('unit:')) return;
+      if(!(viewSelect.value.startsWith('unit:') || viewSelect.value.startsWith('panorama:'))) return;
       const bIdx=Number(selectBox.value);
       const uIdx=Number(viewSelect.value.split(':')[1]);
       if(compareState.find(x=>x.bIdx===bIdx && x.uIdx===uIdx)) return;
@@ -3452,6 +3571,8 @@ function hideUnitMetaUI(){
     async function updateView(idx){
       const row=b[idx];
       const selectedValue=viewSelect.value||'exterior';
+      disableInteriorClip();
+      setCameraCollision(true);
       let didBeginLoad = false;
       const isExterior=(selectedValue==='exterior');
       const selectedParts=selectedValue.split(':');
@@ -3503,6 +3624,8 @@ function hideUnitMetaUI(){
         similarCard.style.display='none';
         priceCard.style.display='none';
         commuteCard.style.display='none';
+        disableInteriorClip();
+        setCameraCollision(true);
         refreshPoisForSelection();
         if(showFutureProjectsToggle && showFutureProjectsToggle.checked && hasFutureProjectsByBuilding[idx]) refreshFutureProjects(idx); else clearAllFutureProjectEntities();
         return;
@@ -3513,6 +3636,7 @@ function hideUnitMetaUI(){
 
       if(isExterior){
         setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
+        setCameraCollision(true);
         const lon=toNum(row.lng), lat=toNum(row.lat);
         const height=toNum(row.height)||20, scale=toNum(row.scale)||10;
         const heading=Cesium.Math.toRadians(toNum(row.heading)||0), pitch=Cesium.Math.toRadians(-28);
@@ -3547,6 +3671,7 @@ function hideUnitMetaUI(){
         });
         const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov=Math.PI/3;
 
+        syncInteriorClipForSelection(null, row, true);
         title.textContent=row.name||'';
         hideUnitMetaUI();
         hideFinishCard();
@@ -3588,6 +3713,8 @@ function hideUnitMetaUI(){
           requestSceneRender();
         }
 
+        syncInteriorClipForSelection(meta, row, false);
+        setCameraCollision(false);
         setPanoramaMouseBindings();
         interiorNav.disable();
         setJoystickVisible(false);
@@ -3601,7 +3728,7 @@ function hideUnitMetaUI(){
         fovValEl.textContent = saved;
 
         title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
-        hideUnitMetaUI();
+        renderUnitMetaUI(meta, row);
         hideFinishCard();
         if(isEditorAdmin()) populateAdminEditor(selectedMeta, row);
         const panoNames = panoCfg.items.map(function(it){ return it.title || it.key; }).filter(Boolean);
@@ -3612,15 +3739,34 @@ function hideUnitMetaUI(){
         descBox.style.display = d ? 'block' : 'none';
         descBox.textContent = d;
 
-        priceCanvas.style.display='none';
-        loanCard.style.display='none';
-        compareCard.style.display='none';
-        similarCard.style.display='none';
-        priceCard.style.display='none';
-        commuteCard.style.display='none';
-        if (typeof compareModal !== 'undefined' && compareModal) compareModal.style.display='none';
+        const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
+        if (chartSeries) {
+          priceCanvas.style.display='block';
+          drawPriceChart(priceCanvas, chartSeries);
+        } else {
+          priceCanvas.style.display='none';
+        }
 
-        mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
+        const autoPrice=getCurrentPrice(meta,row);
+        const hasComparablePrice = Number.isFinite(autoPrice) && autoPrice > 0;
+        loanCard.style.display = hasComparablePrice ? 'block' : 'none';
+        compareCard.style.display = hasComparablePrice ? 'block' : 'none';
+        similarCard.style.display = hasComparablePrice ? 'block' : 'none';
+        priceCard.style.display = hasComparablePrice ? 'block' : 'none';
+        commuteCard.style.display='none';
+        if(hasComparablePrice){
+          loanPrice.value = String(autoPrice);
+          recalcLoan();
+          buildSimilarList(idx,k);
+          renderInsights(idx,k);
+        } else {
+          similarCard.style.display='none';
+          priceCard.style.display='none';
+          if (typeof compareModal !== 'undefined' && compareModal) compareModal.style.display='none';
+        }
+
+        mini.showPlanForUnit(idx,k,meta);
+        mini.refreshCity(idx); mini.updateCityCamera();
       } else if (selectedIsAmenity) {
         const k=selectedIndex;
         const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
@@ -3645,6 +3791,8 @@ function hideUnitMetaUI(){
           requestSceneRender();
         }
 
+        syncInteriorClipForSelection(meta, row, false);
+        setCameraCollision(false);
         // Amenities should behave like interior navigation, not exterior orbit mode.
         setInteriorMouseBindings();
         interiorNav.enable();
@@ -3686,6 +3834,8 @@ function hideUnitMetaUI(){
           viewer.scene.camera.lookAt(target, new Cesium.HeadingPitchRange(camHead,camPitch,range));
           viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
           requestSceneRender();
+          syncInteriorClipForSelection(meta, row, false);
+          setCameraCollision(false);
           setInteriorMouseBindings(); interiorNav.enable(); setJoystickVisible(true);
 
           const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
@@ -3723,6 +3873,8 @@ function hideUnitMetaUI(){
           renderInsights(idx,k);
           updateCommute(idx);
         } else {
+          disableInteriorClip();
+          setCameraCollision(true);
           setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
           title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
           renderUnitMetaUI(meta, row);
