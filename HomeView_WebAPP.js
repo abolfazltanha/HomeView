@@ -3900,7 +3900,7 @@ function hideUnitMetaUI(){
       if(selectedIsPanorama){
         showLabelsToggle.checked = true;
       }
-      if(isExterior || selectedIsAmenity || selectedIsPanorama || !selectedMeta || selectedKind!=='unit'){
+      if(isExterior || selectedIsAmenity || !selectedMeta || (selectedKind!=='unit' && selectedKind!=='panorama')){
         unitViewsState.lastTrackedKey = '';
       }
       currentMode = isExterior ? 'exterior' : (selectedIsPanorama ? 'panorama' : (selectedIsAmenity ? 'amenity' : 'interior'));
@@ -4059,6 +4059,7 @@ function hideUnitMetaUI(){
         renderUnitMetaUI(meta, row);
         hideFinishCard();
         if(isEditorAdmin()) populateAdminEditor(selectedMeta, row);
+        await trackUnitView(firstFilled(meta.building_key, row.building_key, row.name, row.title), getItemDisplayName(meta));
         const panoNames = panoCfg.items.map(function(it){ return it.title || it.key; }).filter(Boolean);
         const dBase = getItemDescription(selectedMeta, row).trim();
         const dExtra = activePano ? ('Current panorama: ' + (activePano.title || activePano.key || '—')) : '';
