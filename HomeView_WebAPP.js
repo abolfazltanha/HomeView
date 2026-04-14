@@ -148,6 +148,12 @@ Promise.all([
     return Number.isFinite(v)? v : NaN;
   }
   function hasTextValue(v){ return v !== undefined && v !== null && String(v).trim() !== ''; }
+  function isLikelyModelUrl(rawUrl){
+    const s = String(rawUrl || '').trim().toLowerCase();
+    if(!s) return false;
+    if(s.startsWith('blob:')) return true;
+    return s.includes('.glb') || s.includes('.gltf');
+  }
   function firstFilled(){
     for (let i=0;i<arguments.length;i++){
       if (hasTextValue(arguments[i])) return String(arguments[i]).trim();
@@ -1311,7 +1317,7 @@ async function refreshFutureProjects(bIdx){
 
   // ===== Dynamic project source (single sheet_id + single Apps Script URL) =====
   const DEFAULT_SPREADSHEET_ID = "1ub-9XgxyuuLZPqO83hNjP3Gzm-uKMki_VtGrHeJiABI";
-  const DEFAULT_APP_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwRc6owwbn9LVmI-SV2KoDVsQ2915BioswaJ16rlu9-FnwukEb39mdA63uE8_IF8dfzNw/exec";
+  const DEFAULT_APP_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzIiszffeGdD1fnvB0iHNVzwYD3izOcVMlwQnZqVjQ3gqFCbmKPb2voejL1re1pBxL44w/exec";
   const APP_SCRIPT_SECRET = "homeview123";
 
   function safeSessionGet(key){
@@ -1818,6 +1824,7 @@ async function refreshFutureProjects(bIdx){
     }
 
     async function ensureInteriorBlobUrl(bIdx, itemIdx, rawUrl){
+      if(!isLikelyModelUrl(rawUrl)) throw new Error('Invalid model URL');
       if((interiorBlobUrlsByBuilding[bIdx]||[])[itemIdx]) return interiorBlobUrlsByBuilding[bIdx][itemIdx];
       if((interiorBlobFetchPromisesByBuilding[bIdx]||[])[itemIdx]) return interiorBlobFetchPromisesByBuilding[bIdx][itemIdx];
       const attempts = [18000, 26000];
@@ -1855,7 +1862,7 @@ async function refreshFutureProjects(bIdx){
 
     async function ensureInteriorEntity(bIdx, itemIdx){
       const meta = (interiorMetaByBuilding[bIdx]||[])[itemIdx] || null;
-      if(!meta || !hasTextValue(meta.model_url)) return null;
+      if(!meta || !isLikelyModelUrl(meta.model_url)) return null;
       if((interiorEntitiesByBuilding[bIdx]||[])[itemIdx]) return interiorEntitiesByBuilding[bIdx][itemIdx];
       if((interiorLoadPromisesByBuilding[bIdx]||[])[itemIdx]) return interiorLoadPromisesByBuilding[bIdx][itemIdx];
 
@@ -3900,7 +3907,8 @@ function hideUnitMetaUI(){
       labelEditorState.currentSelection = { bIdx: idx, kind: selectedKind, itemIdx: selectedIndex, meta: selectedMeta, row: row, isExterior: isExterior };
 
       const thisSwitchToken = ++interiorSwitchToken;
-      const wantsInteriorModel = !isExterior && !!selectedMeta && hasTextValue(selectedMeta.model_url) && (selectedKind==='unit' || selectedKind==='amenity' || selectedKind==='panorama');
+      const hasRealModel = !!selectedMeta && isLikelyModelUrl(selectedMeta.model_url);
+      const wantsInteriorModel = !isExterior && !!selectedMeta && hasRealModel && (selectedKind==='unit' || selectedKind==='amenity' || selectedKind==='panorama');
 
       stopCameraTracking();
       modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&isExterior);
