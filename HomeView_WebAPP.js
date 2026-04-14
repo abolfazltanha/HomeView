@@ -302,6 +302,13 @@ function parseFutureProjects(raw){
     }
   })();
 
+  function setCesiumGroundVisible(visible){
+    try{
+      if(GOOGLE_3D_TILES) GOOGLE_3D_TILES.show = !!visible;
+    }catch(_){ }
+    requestSceneRenderBurst(2);
+  }
+
   async function getSurfaceHeight(lon, lat){
     const carto = Cesium.Cartographic.fromDegrees(lon, lat);
     if (GOOGLE_3D_TILES) {
@@ -548,6 +555,47 @@ function parseFutureProjects(raw){
   viewLoadStatus.textContent = 'Loading selected model...';
   panelBody.appendChild(viewLoadStatus);
 
+  const panoTransitionOverlay = document.createElement('div');
+  panoTransitionOverlay.style.cssText = `
+    position:fixed;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:rgba(8,10,14,0);
+    color:#fff;
+    font-family:system-ui,sans-serif;
+    font-size:18px;
+    font-weight:600;
+    letter-spacing:.2px;
+    opacity:0;
+    pointer-events:none;
+    z-index:450000;
+    transition:opacity .22s ease, background-color .22s ease;
+  `;
+  panoTransitionOverlay.innerHTML = '<div style="padding:14px 18px;border-radius:14px;background:rgba(0,0,0,.34);backdrop-filter:blur(4px);box-shadow:0 8px 24px rgba(0,0,0,.18)">Loading panorama...</div>';
+  document.body.appendChild(panoTransitionOverlay);
+
+  let panoTransitionVisible = false;
+  function waitMs(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
+  async function showPanoramaTransition(message){
+    const text = String(message || 'Loading panorama...').trim() || 'Loading panorama...';
+    const inner = panoTransitionOverlay.firstElementChild;
+    if(inner) inner.textContent = text;
+    panoTransitionOverlay.style.pointerEvents = 'auto';
+    panoTransitionOverlay.style.opacity = '1';
+    panoTransitionOverlay.style.background = 'rgba(8,10,14,.32)';
+    panoTransitionVisible = true;
+    await waitMs(180);
+  }
+  async function hidePanoramaTransition(){
+    if(!panoTransitionVisible) return;
+    panoTransitionOverlay.style.opacity = '0';
+    panoTransitionOverlay.style.background = 'rgba(8,10,14,0)';
+    panoTransitionVisible = false;
+    await waitMs(230);
+    if(!panoTransitionVisible) panoTransitionOverlay.style.pointerEvents = 'none';
+  }
 
   const finishCard = document.createElement('div');
   finishCard.className = 'ui-card';
@@ -618,6 +666,17 @@ const communitySec = makeChipSectionCard('Community Features');
 
 // move description below unit details cards
 panelBody.appendChild(descBox);
+
+const adminBuildingViewsCard = document.createElement('div');
+adminBuildingViewsCard.className = 'ui-card';
+adminBuildingViewsCard.style.cssText = "border-radius:12px;padding:10px;display:none";
+adminBuildingViewsCard.innerHTML = `
+  <div style="font-weight:700;margin-bottom:6px">Unit View Stats</div>
+  <div id="adminBuildingViewsSummary" style="font-size:13px;line-height:1.6;color:#333"></div>
+  <div id="adminBuildingViewsList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px"></div>`;
+panelBody.appendChild(adminBuildingViewsCard);
+const adminBuildingViewsSummary = adminBuildingViewsCard.querySelector('#adminBuildingViewsSummary');
+const adminBuildingViewsList = adminBuildingViewsCard.querySelector('#adminBuildingViewsList');
 
 const adminUnitEditorCard = document.createElement('div');
 adminUnitEditorCard.className = 'ui-card';
@@ -1250,19 +1309,268 @@ async function refreshFutureProjects(bIdx){
   presetSelect.value = initialPreset;
   presetSelect.addEventListener('change', ()=> applyGfxPreset(presetSelect.value));
 
-  // ===== Data URLs =====
-  const BUILDINGS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS1M15_dgf0S6Ofc4wdoZdPac8gcwGzHDVCPkNuyZKSESp2r4OIDJ4bcoV-Gk1aFTrVi0foqccCbpGA/pub?gid=0&single=true&output=csv";
-  const POIS_URL      = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSCBUEgH8lRsIIYHEKxCObvqj4Ztxy4RcAhyklS2VntlkTLQ7PthrSNMtwa-sIKTZ1tcqEuP6KucILJ/pub?gid=0&single=true&output=csv";
-  const INTERIORS_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSf6OimMf2GFXMiPRgOhhbNdwaijM3vPnFX5nlKREf9vYe3plFIkX0RPnRMbAa7fFt-iMc_VF-tcSfs/pub?gid=0&single=true&output=csv";
+  // ===== Dynamic project source (single sheet_id + single Apps Script URL) =====
+  const DEFAULT_SPREADSHEET_ID = "1ub-9XgxyuuLZPqO83hNjP3Gzm-uKMki_VtGrHeJiABI";
+  const DEFAULT_APP_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwRc6owwbn9LVmI-SV2KoDVsQ2915BioswaJ16rlu9-FnwukEb39mdA63uE8_IF8dfzNw/exec";
+  const APP_SCRIPT_SECRET = "homeview123";
+
+  function safeSessionGet(key){
+    try{ return sessionStorage.getItem(key) || ''; }catch(_){ return ''; }
+  }
+  function safeSessionSet(key, value){
+    try{ if(value) sessionStorage.setItem(key, value); }catch(_){ }
+  }
+  function getQueryParam(){
+    try{
+      const params = new URLSearchParams(window.location.search || '');
+      for(let i=0;i<arguments.length;i++){
+        const value = String(params.get(arguments[i]) || '').trim();
+        if(value) return value;
+      }
+    }catch(_){ }
+    return '';
+  }
+  function resolveSpreadsheetId(){
+    let value = getQueryParam('sheet','sheet_id') || String(DEFAULT_SPREADSHEET_ID || '').trim() || safeSessionGet('homeview.sheet_id');
+    if(!value){
+      try{ value = String(window.prompt('Enter Google Spreadsheet ID for this HomeView project:', '') || '').trim(); }catch(_){ value=''; }
+    }
+    if(!value) throw new Error('Missing Spreadsheet ID. Add ?sheet=YOUR_SPREADSHEET_ID or set DEFAULT_SPREADSHEET_ID.');
+    safeSessionSet('homeview.sheet_id', value);
+    return value;
+  }
+  function resolveAppScriptUrl(){
+    let value = getQueryParam('api','api_url','app_script','appscript') || String(DEFAULT_APP_SCRIPT_URL || '').trim() || safeSessionGet('homeview.app_script_url');
+    if(!value){
+      try{ value = String(window.prompt('Enter Apps Script Web App URL for HomeView:', '') || '').trim(); }catch(_){ value=''; }
+    }
+    if(!value) throw new Error('Missing Apps Script URL. Add ?api=YOUR_WEB_APP_URL or set DEFAULT_APP_SCRIPT_URL.');
+    safeSessionSet('homeview.app_script_url', value);
+    return value;
+  }
+
+  const ACTIVE_SPREADSHEET_ID = resolveSpreadsheetId();
+  const APP_SCRIPT_URL = resolveAppScriptUrl();
+  const UNIT_VIEWS_API_URL = APP_SCRIPT_URL;
+  const UNIT_VIEWS_URL = "";
+
+  async function fetchAppJson(action, extra){
+    const response = await fetch(APP_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({
+        secret: APP_SCRIPT_SECRET,
+        action: action,
+        sheet_id: ACTIVE_SPREADSHEET_ID
+      }, extra || {}))
+    });
+    const raw = await response.text();
+    try{
+      return JSON.parse(raw);
+    }catch(_){
+      throw new Error(raw || ('Invalid API response for action: ' + action));
+    }
+  }
 
   let buildingsData = [];
 
   // ===== Load & Build =====
-  Promise.all([fetchCSV(BUILDINGS_URL), fetchCSV(POIS_URL), fetchCSV(INTERIORS_URL)]).then(async ([csvB,csvP,csvI])=>{
-    const b = Papa.parse(csvB,{header:true}).data.map(canonicalizeRow).filter(r=>r.model_url && r.lat && r.lng && (r.estimated_price || r.estimated_price_first));
+  fetchAppJson('get_all_data').then(async (allData)=>{
+    if(!allData || !allData.ok) throw new Error((allData && allData.error) || 'Unable to load project data from Apps Script');
+    const b = (allData.buildings || []).map(canonicalizeRow).filter(r=>r.model_url && r.lat && r.lng && (r.estimated_price || r.estimated_price_first));
     buildingsData = b;
-    const p = Papa.parse(csvP,{header:true}).data.map(canonicalizeRow).filter(r=>r.name && r.lat && r.lng && r.type);
-    const inter = Papa.parse(csvI,{header:true}).data.map(canonicalizeRow).filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
+    const p = (allData.pois || []).map(canonicalizeRow).filter(r=>r.name && r.lat && r.lng && r.type);
+    const inter = (allData.interiors || []).map(canonicalizeRow).filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
+    const viewRows = (allData.views || []).map(canonicalizeRow);
+
+    function toViewCount(v){
+      const n = parseInt(String(v == null ? '' : v).replace(/[^0-9-]/g,''), 10);
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    }
+    function makeUnitViewRowKey(buildingKey, unitName){
+      return normKey(buildingKey) + '||' + String(unitName || '').trim();
+    }
+    function makeUnitViewApiPayload(action, extra){
+      const body = Object.assign({
+        secret: APP_SCRIPT_SECRET,
+        action: action,
+        sheet_id: ACTIVE_SPREADSHEET_ID
+      }, extra || {});
+      return {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(body)
+      };
+    }
+
+    const unitViewsState = {
+      rowsByKey: new Map(),
+      lastTrackedKey: '',
+      loadPromise: null
+    };
+
+    function upsertUnitViewRow(buildingKey, unitName, views){
+      const cleanBuildingKey = String(buildingKey || '').trim();
+      const cleanUnitName = String(unitName || '').trim();
+      if(!cleanBuildingKey || !cleanUnitName) return null;
+      const rowKey = makeUnitViewRowKey(cleanBuildingKey, cleanUnitName);
+      const existing = unitViewsState.rowsByKey.get(rowKey);
+      const row = {
+        building_key: cleanBuildingKey,
+        unit_name: cleanUnitName,
+        views: Math.max(0, Number.isFinite(Number(views)) ? Number(views) : 0)
+      };
+      unitViewsState.rowsByKey.set(rowKey, Object.assign({}, existing || {}, row));
+      return unitViewsState.rowsByKey.get(rowKey);
+    }
+
+    function seedUnitViewsFromInteriors(){
+      inter.forEach(function(item){
+        if(!isUnitRow(item)) return;
+        const buildingKey = firstFilled(item.building_key, item.parent, item.name);
+        const unitName = getItemDisplayName(item);
+        upsertUnitViewRow(buildingKey, unitName, 0);
+      });
+    }
+
+    function mergeUnitViewsRows(rows){
+      (rows || []).forEach(function(item){
+        if(!item) return;
+        const buildingKey = firstFilled(item.building_key, item.parent);
+        const unitName = firstFilled(item.unit_name, item.name, item.title);
+        if(!buildingKey || !unitName) return;
+        upsertUnitViewRow(buildingKey, unitName, toViewCount(item.views));
+      });
+    }
+
+    async function fetchUnitViewsSnapshot(force){
+      if(!UNIT_VIEWS_API_URL) return;
+      if(unitViewsState.loadPromise && !force) return unitViewsState.loadPromise;
+      unitViewsState.loadPromise = (async function(){
+        try{
+          const result = await fetchAppJson('get_all_data');
+          if(result && result.ok && Array.isArray(result.views)) mergeUnitViewsRows((result.views || []).map(canonicalizeRow));
+        }catch(err){
+          console.warn('Unit views API load failed:', err);
+        }
+      })();
+      try{
+        await unitViewsState.loadPromise;
+      }finally{
+        unitViewsState.loadPromise = null;
+      }
+    }
+
+    function getBuildingUnitViews(buildingKey){
+      const target = normKey(buildingKey);
+      const rows = [];
+      unitViewsState.rowsByKey.forEach(function(item){
+        if(normKey(item && item.building_key) !== target) return;
+        rows.push({
+          building_key: item.building_key,
+          unit_name: item.unit_name,
+          views: toViewCount(item.views)
+        });
+      });
+      rows.sort(function(a,b){
+        if((b.views||0) !== (a.views||0)) return (b.views||0) - (a.views||0);
+        return String(a.unit_name || '').localeCompare(String(b.unit_name || ''));
+      });
+      return rows;
+    }
+
+    function renderAdminBuildingViews(buildingKey){
+      if(!isEditorAdmin()){
+        adminBuildingViewsCard.style.display = 'none';
+        adminBuildingViewsSummary.textContent = '';
+        adminBuildingViewsList.innerHTML = '';
+        return;
+      }
+      const rows = getBuildingUnitViews(buildingKey);
+      const total = rows.reduce(function(sum, item){ return sum + toViewCount(item.views); }, 0);
+      adminBuildingViewsSummary.innerHTML = '<div><strong>Total Unit Views:</strong> ' + total.toLocaleString() + '</div>';
+      adminBuildingViewsList.innerHTML = '';
+      if(!rows.length){
+        const empty = document.createElement('div');
+        empty.style.cssText = 'font-size:12px;color:#666';
+        empty.textContent = 'No unit view data found for this building yet.';
+        adminBuildingViewsList.appendChild(empty);
+      }else{
+        rows.forEach(function(item){
+          const rowEl = document.createElement('div');
+          rowEl.style.cssText = 'display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:6px 8px;border-radius:8px;background:#f8f8f8';
+          const nameEl = document.createElement('div');
+          nameEl.textContent = item.unit_name;
+          const valueEl = document.createElement('div');
+          valueEl.style.cssText = 'font-weight:700';
+          valueEl.textContent = String(toViewCount(item.views));
+          rowEl.appendChild(nameEl);
+          rowEl.appendChild(valueEl);
+          adminBuildingViewsList.appendChild(rowEl);
+        });
+      }
+      adminBuildingViewsCard.style.display = 'block';
+    }
+
+    async function refreshBuildingUnitViews(buildingKey, opts){
+      const options = opts || {};
+      const cleanBuildingKey = String(buildingKey || '').trim();
+      if(!cleanBuildingKey) return;
+      if(UNIT_VIEWS_API_URL){
+        try{
+          const response = await fetch(UNIT_VIEWS_API_URL, makeUnitViewApiPayload('get_building_views', {
+            building_key: cleanBuildingKey
+          }));
+          const raw = await response.text();
+          let parsed = null;
+          try{ parsed = JSON.parse(raw); }catch(_){ parsed = null; }
+          if(parsed && parsed.ok && Array.isArray(parsed.units)){
+            mergeUnitViewsRows(parsed.units);
+          }
+        }catch(err){
+          console.warn('Building unit views refresh failed:', err);
+        }
+      }else if(options.forceCsv !== false){
+        await fetchUnitViewsSnapshot(!!options.force);
+      }
+      renderAdminBuildingViews(cleanBuildingKey);
+    }
+
+    async function trackUnitView(buildingKey, unitName){
+      const cleanBuildingKey = String(buildingKey || '').trim();
+      const cleanUnitName = String(unitName || '').trim();
+      if(!cleanBuildingKey || !cleanUnitName) return;
+      const rowKey = makeUnitViewRowKey(cleanBuildingKey, cleanUnitName);
+      if(unitViewsState.lastTrackedKey === rowKey) return;
+      unitViewsState.lastTrackedKey = rowKey;
+
+      const row = upsertUnitViewRow(cleanBuildingKey, cleanUnitName, 0);
+      row.views = toViewCount(row.views) + 1;
+      unitViewsState.rowsByKey.set(rowKey, row);
+
+      if(viewSelect && viewSelect.value === 'exterior') renderAdminBuildingViews(cleanBuildingKey);
+
+      if(!UNIT_VIEWS_API_URL) return;
+      try{
+        const response = await fetch(UNIT_VIEWS_API_URL, makeUnitViewApiPayload('increment_unit_view', {
+          building_key: cleanBuildingKey,
+          unit_name: cleanUnitName
+        }));
+        const raw = await response.text();
+        let parsed = null;
+        try{ parsed = JSON.parse(raw); }catch(_){ parsed = null; }
+        if(parsed && parsed.ok && Number.isFinite(Number(parsed.views))){
+          row.views = Math.max(row.views, Number(parsed.views));
+          unitViewsState.rowsByKey.set(rowKey, row);
+        }
+      }catch(err){
+        console.warn('Unit view increment failed:', err);
+      }
+    }
+
+    seedUnitViewsFromInteriors();
+    mergeUnitViewsRows(viewRows);
+    await fetchUnitViewsSnapshot(false);
 
     // selectors
     b.forEach((row,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=row.name||('Model #'+(i+1)); selectBox.appendChild(o); });
@@ -3185,17 +3493,11 @@ function populateAdminEditor(meta, row){
 
 
 async function saveEditorPayloadToSheet(payload){
-  const response = await fetch('https://home-view-ruddy.vercel.app/api/save-editor', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-
-  const raw = await response.text();
   try{
-    return JSON.parse(raw);
-  }catch(_){
-    return { ok:false, error: raw || 'Unknown response' };
+    const response = await fetchAppJson('save_interior_updates', payload);
+    return response;
+  }catch(err){
+    return { ok:false, error: String(err && err.message ? err.message : err) };
   }
 }
 function buildEditorSavePayload(){
@@ -3408,6 +3710,7 @@ adminApplyBtn.onclick = function(){
 
       const thisToken = ++panoramaApplyToken;
       beginViewLoad('Loading panorama...');
+      await showPanoramaTransition('Loading panorama...');
       try{
         destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: true, silent: true });
         const reloaded = await ensureInteriorEntity(sel.bIdx, sel.itemIdx);
@@ -3417,13 +3720,17 @@ adminApplyBtn.onclick = function(){
         refreshLabelListUI();
         labelEditorStatus.textContent = 'Panorama changed to ' + (item.title || item.key || 'selected view') + '.';
         requestSceneRenderBurst(10);
+        await waitMs(80);
         return true;
       } catch(err){
         console.warn('Panorama apply failed:', err);
         labelEditorStatus.textContent = 'Could not load that panorama.';
         return false;
       } finally {
-        if(thisToken === panoramaApplyToken) endViewLoad();
+        if(thisToken === panoramaApplyToken){
+          endViewLoad();
+          hidePanoramaTransition().catch(function(){});
+        }
       }
     }
 
@@ -3565,6 +3872,7 @@ function hideUnitMetaUI(){
   structuresSec.card.style.display='none';
   heatingSec.card.style.display='none';
   communitySec.card.style.display='none';
+  adminBuildingViewsCard.style.display='none';
   adminUnitEditorCard.style.display='none';
 }
 
@@ -3581,6 +3889,13 @@ function hideUnitMetaUI(){
       const selectedMeta=(interiorMetaByBuilding[idx]||[])[selectedIndex]||null;
       const selectedIsAmenity = !isExterior && selectedKind==='amenity' && !!selectedMeta;
       const selectedIsPanorama = !isExterior && selectedKind==='panorama' && !!selectedMeta;
+      setCesiumGroundVisible(!selectedIsPanorama);
+      if(selectedIsPanorama){
+        showLabelsToggle.checked = true;
+      }
+      if(isExterior || selectedIsAmenity || selectedIsPanorama || !selectedMeta || selectedKind!=='unit'){
+        unitViewsState.lastTrackedKey = '';
+      }
       currentMode = isExterior ? 'exterior' : (selectedIsPanorama ? 'panorama' : (selectedIsAmenity ? 'amenity' : 'interior'));
       labelEditorState.currentSelection = { bIdx: idx, kind: selectedKind, itemIdx: selectedIndex, meta: selectedMeta, row: row, isExterior: isExterior };
 
@@ -3678,6 +3993,11 @@ function hideUnitMetaUI(){
         const d = getItemDescription(row).trim();
         descBox.style.display = d ? 'block' : 'none';
         descBox.textContent = d;
+        if(isEditorAdmin()){
+          refreshBuildingUnitViews(firstFilled(row.building_key, row.name, row.title), { force:false, forceCsv:false });
+        }else{
+          adminBuildingViewsCard.style.display = 'none';
+        }
 
         priceCanvas.style.display='none';
         loanCard.style.display='none';
@@ -3738,6 +4058,7 @@ function hideUnitMetaUI(){
         const d = [dBase, dExtra, dList].filter(Boolean).join('\n');
         descBox.style.display = d ? 'block' : 'none';
         descBox.textContent = d;
+        adminBuildingViewsCard.style.display = 'none';
 
         const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
         if (chartSeries) {
@@ -3811,6 +4132,7 @@ function hideUnitMetaUI(){
         const d = getItemDescription(selectedMeta, row).trim();
         descBox.style.display = d ? 'block' : 'none';
         descBox.textContent = d;
+        adminBuildingViewsCard.style.display = 'none';
 
         priceCanvas.style.display='none';
         loanCard.style.display='none';
@@ -3847,9 +4169,11 @@ function hideUnitMetaUI(){
           hideFinishCard();
           await syncCustomizationUIForSelection(idx, k, meta, row, ent);
           if(isEditorAdmin()) populateAdminEditor(meta, row);
+          await trackUnitView(firstFilled(meta.building_key, row.building_key, row.name, row.title), getItemDisplayName(meta));
           const d = getItemDescription(meta, row).trim();
           descBox.style.display = d ? 'block' : 'none';
           descBox.textContent = d;
+          adminBuildingViewsCard.style.display = 'none';
 
           const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
           if (chartSeries) {
@@ -3880,9 +4204,11 @@ function hideUnitMetaUI(){
           renderUnitMetaUI(meta, row);
           await syncCustomizationUIForSelection(idx, k, meta, row, ent);
           if(isEditorAdmin()) populateAdminEditor(meta, row);
+          await trackUnitView(firstFilled(meta.building_key, row.building_key, row.name, row.title), getItemDisplayName(meta));
           const d = getItemDescription(meta, row).trim();
           descBox.style.display = d ? 'block' : 'none';
           descBox.textContent = d;
+          adminBuildingViewsCard.style.display = 'none';
           priceCanvas.style.display='none';
           loanCard.style.display='none';
           compareCard.style.display='none';
