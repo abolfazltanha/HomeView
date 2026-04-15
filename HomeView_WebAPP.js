@@ -1323,7 +1323,7 @@ async function refreshFutureProjects(bIdx){
     } else if (preset === 'high'){ viewer.resolutionScale = Math.min(1.25, DPR); if (fxaaStage) fxaaStage.enabled = true; if ('msaaSamples' in viewer.scene) viewer.scene.msaaSamples = 4; desiredMSE=8;  if(GOOGLE_3D_TILES) GOOGLE_3D_TILES.maximumScreenSpaceError=desiredMSE;
     } else { viewer.resolutionScale = 1.0; if (fxaaStage) fxaaStage.enabled = true; if ('msaaSamples' in viewer.scene) viewer.scene.msaaSamples = 2; desiredMSE=12; if(GOOGLE_3D_TILES) GOOGLE_3D_TILES.maximumScreenSpaceError=desiredMSE; }
   }
-  let initialPreset = IS_MOBILE ? 'low' : 'balanced';
+  let initialPreset = 'balanced';
   const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
   try{ if (conn?.saveData) initialPreset = 'low'; else if (conn?.effectiveType && /(^|-)2g|(^|-)slow-2g|(^|-)3g/.test(conn.effectiveType)) initialPreset = 'low'; }catch(e){}
   applyGfxPreset(initialPreset);
@@ -1882,11 +1882,14 @@ async function refreshFutureProjects(bIdx){
       if((interiorLoadPromisesByBuilding[bIdx]||[])[itemIdx]) return interiorLoadPromisesByBuilding[bIdx][itemIdx];
 
       const buildingRow = b[bIdx];
-      const p = (async function(){
+      const loadGeneration = getInteriorEntityGeneration(bIdx, itemIdx);
+      let p = null;
+      p = (async function(){
         let lastErr = null;
         for(let attempt=0; attempt<2; attempt++){
           try{
             const blobUrl = await ensureInteriorBlobUrl(bIdx, itemIdx, meta.model_url);
+            if(loadGeneration !== getInteriorEntityGeneration(bIdx, itemIdx)) return null;
             const finishSelections = customizationSelectionsByKey.get(makeCustomizationSelectionKey(bIdx, itemIdx)) || null;
             let panoramaSelection = panoramaSelectionsByKey.get(makeCustomizationSelectionKey(bIdx, itemIdx)) || null;
             if(isPanoramaRow(meta) && (!panoramaSelection || !panoramaSelection.url)){
@@ -1894,6 +1897,13 @@ async function refreshFutureProjects(bIdx){
               if(panoramaSelection) panoramaSelectionsByKey.set(makeCustomizationSelectionKey(bIdx, itemIdx), panoramaSelection);
             }
             const ent = await createInteriorModel(buildingRow, meta, viewer, blobUrl, finishSelections, panoramaSelection);
+            if(loadGeneration !== getInteriorEntityGeneration(bIdx, itemIdx)){
+              try{ if(ent && ent.anchorEntity) viewer.entities.remove(ent.anchorEntity); }catch(_){ }
+              try{ if(ent && ent.modelPrimitive) viewer.scene.primitives.remove(ent.modelPrimitive); }catch(_){ }
+              try{ if(ent && ent.destroy) ent.destroy(); }catch(_){ }
+              requestSceneRenderBurst(2);
+              return null;
+            }
             if(!interiorEntitiesByBuilding[bIdx]) interiorEntitiesByBuilding[bIdx]=[];
             interiorEntitiesByBuilding[bIdx][itemIdx] = ent;
             if(ent) ent.show = false;
@@ -1902,21 +1912,29 @@ async function refreshFutureProjects(bIdx){
           } catch(err){
             lastErr = err;
             console.warn('Interior model load failed:', err);
-            destroyInteriorEntity(bIdx, itemIdx, { keepBlobUrl: false, silent: true });
+            if(loadGeneration !== getInteriorEntityGeneration(bIdx, itemIdx)) return null;
+            destroyInteriorEntity(bIdx, itemIdx, { keepBlobUrl: false, silent: true, preserveGeneration: true });
+            await waitMs(attempt === 0 ? 120 : 0);
           }
         }
+        if(lastErr) console.warn('Interior model could not be created after retries:', lastErr);
         return null;
       })().finally(function(){
-        if(interiorLoadPromisesByBuilding[bIdx]) interiorLoadPromisesByBuilding[bIdx][itemIdx] = null;
+        if(interiorLoadPromisesByBuilding[bIdx] && interiorLoadPromisesByBuilding[bIdx][itemIdx] === p){
+          interiorLoadPromisesByBuilding[bIdx][itemIdx] = null;
+        }
         requestSceneRenderBurst(6);
       });
 
+      if(!interiorLoadPromisesByBuilding[bIdx]) interiorLoadPromisesByBuilding[bIdx] = [];
       interiorLoadPromisesByBuilding[bIdx][itemIdx] = p;
       return p;
     }
 
+
     function destroyInteriorEntity(bIdx, itemIdx, opts){
       const options = opts || {};
+      if(!options.preserveGeneration) bumpInteriorEntityGeneration(bIdx, itemIdx);
       const arr = interiorEntitiesByBuilding[bIdx] || [];
       const ent = arr[itemIdx] || null;
       if(ent){
@@ -1933,6 +1951,7 @@ async function refreshFutureProjects(bIdx){
       if(interiorBlobFetchPromisesByBuilding[bIdx]) interiorBlobFetchPromisesByBuilding[bIdx][itemIdx] = null;
       if(!options.silent) requestSceneRenderBurst(4);
     }
+
 
     function destroyNonActiveInteriorEntities(nextSelection){
       const keepB = nextSelection ? nextSelection.bIdx : -1;
@@ -1951,8 +1970,23 @@ async function refreshFutureProjects(bIdx){
     let activeCustomizationState = null;
     const customizationSelectionsByKey = new Map();
     const panoramaSelectionsByKey = new Map();
+    const panoramaReloadPromisesByKey = new Map();
     let panoramaApplyToken = 0;
+    const interiorEntityGenerationByBuilding = [];
     function makeCustomizationSelectionKey(bIdx, itemIdx){ return String(bIdx) + ':' + String(itemIdx); }
+    function ensureInteriorGenerationSlot(bIdx, itemIdx){
+      if(!interiorEntityGenerationByBuilding[bIdx]) interiorEntityGenerationByBuilding[bIdx] = [];
+      if(!Number.isFinite(interiorEntityGenerationByBuilding[bIdx][itemIdx])) interiorEntityGenerationByBuilding[bIdx][itemIdx] = 0;
+      return interiorEntityGenerationByBuilding[bIdx];
+    }
+    function getInteriorEntityGeneration(bIdx, itemIdx){
+      return ensureInteriorGenerationSlot(bIdx, itemIdx)[itemIdx];
+    }
+    function bumpInteriorEntityGeneration(bIdx, itemIdx){
+      const arr = ensureInteriorGenerationSlot(bIdx, itemIdx);
+      arr[itemIdx] = (Number(arr[itemIdx]) || 0) + 1;
+      return arr[itemIdx];
+    }
 
     function parseBoolish(v){
       if(v === true || v === false) return v;
@@ -3731,33 +3765,53 @@ adminApplyBtn.onclick = function(){
       if(!item || !item.url) return false;
 
       const key = makeCustomizationSelectionKey(sel.bIdx, sel.itemIdx);
-      panoramaSelectionsByKey.set(key, item);
+      const lockKey = key + '::' + String(item.key || item.title || item.url || '');
+      if(panoramaReloadPromisesByKey.has(lockKey)) return panoramaReloadPromisesByKey.get(lockKey);
 
-      const thisToken = ++panoramaApplyToken;
-      beginViewLoad('Loading panorama...');
-      await showPanoramaTransition('Loading panorama...');
-      try{
-        destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: true, silent: true });
-        const reloaded = await ensureInteriorEntity(sel.bIdx, sel.itemIdx);
-        if(thisToken !== panoramaApplyToken) return true;
-        if(reloaded) reloaded.show = true;
-        updatePanoramaLabelUiHints();
-        refreshLabelListUI();
-        labelEditorStatus.textContent = 'Panorama changed to ' + (item.title || item.key || 'selected view') + '.';
-        requestSceneRenderBurst(10);
-        await waitMs(80);
-        return true;
-      } catch(err){
-        console.warn('Panorama apply failed:', err);
-        labelEditorStatus.textContent = 'Could not load that panorama.';
-        return false;
-      } finally {
-        if(thisToken === panoramaApplyToken){
-          endViewLoad();
-          hidePanoramaTransition().catch(function(){});
+      const p = (async function(){
+        panoramaSelectionsByKey.set(key, item);
+
+        const thisToken = ++panoramaApplyToken;
+        if(mobileViewChangeTimer){ clearTimeout(mobileViewChangeTimer); mobileViewChangeTimer = null; }
+        beginViewLoad('Loading panorama...');
+        await showPanoramaTransition('Loading panorama...');
+        try{
+          let reloaded = null;
+          for(let attempt=0; attempt<2; attempt++){
+            destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: true, silent: true });
+            await waitMs((IS_MOBILE ? 60 : 20) + (attempt * 80));
+            reloaded = await ensureInteriorEntity(sel.bIdx, sel.itemIdx);
+            if(thisToken !== panoramaApplyToken) return true;
+            if(reloaded) break;
+          }
+          if(!reloaded) throw new Error('Panorama entity did not reload.');
+          reloaded.show = true;
+          updatePanoramaLabelUiHints();
+          refreshLabelListUI();
+          labelEditorStatus.textContent = 'Panorama changed to ' + (item.title || item.key || 'selected view') + '.';
+          requestSceneRenderBurst(10);
+          await waitMs(120);
+          return true;
+        } catch(err){
+          console.warn('Panorama apply failed:', err);
+          labelEditorStatus.textContent = 'Could not load that panorama.';
+          return false;
+        } finally {
+          if(thisToken === panoramaApplyToken){
+            endViewLoad();
+            hidePanoramaTransition().catch(function(){});
+          }
         }
+      })();
+
+      panoramaReloadPromisesByKey.set(lockKey, p);
+      try{
+        return await p;
+      } finally {
+        panoramaReloadPromisesByKey.delete(lockKey);
       }
     }
+
 
     async function handleInteractiveLabelActionFromPick(picked){
       const ent = picked && picked.id ? picked.id : null;
