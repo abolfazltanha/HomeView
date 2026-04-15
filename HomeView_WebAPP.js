@@ -3960,7 +3960,17 @@ async function renderControlsNowOrDeferred(renderFn){
       const selectedMeta=(interiorMetaByBuilding[idx]||[])[selectedIndex]||null;
       const selectedIsAmenity = !isExterior && selectedKind==='amenity' && !!selectedMeta;
       const selectedIsPanorama = !isExterior && selectedKind==='panorama' && !!selectedMeta;
+      const selectionKey = !isExterior ? makeCustomizationSelectionKey(idx, selectedIndex) : '';
+      const hadStoredPanoramaSelection = !!(selectedIsPanorama && panoramaSelectionsByKey.get(selectionKey));
       setCesiumGroundVisible(!selectedIsPanorama);
+
+      // Mobile / tablet UX:
+      // keep controls open in exterior view, but auto-close them when entering any interior/panorama/amenity view.
+      if (IS_MOBILE) {
+        setCollapsed(!isExterior);
+      } else {
+        setCollapsed(false);
+      }
       if(selectedIsPanorama){
         showLabelsToggle.checked = true;
       }
@@ -4121,47 +4131,59 @@ async function renderControlsNowOrDeferred(renderFn){
         fovRange.value = String(saved);
         fovValEl.textContent = saved;
 
-        title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
-        renderUnitMetaUI(meta, row);
-        hideFinishCard();
-        if(isEditorAdmin()) populateAdminEditor(selectedMeta, row);
-        await trackUnitView(firstFilled(meta.building_key, row.building_key, row.name, row.title), getItemDisplayName(meta));
-        const panoNames = panoCfg.items.map(function(it){ return it.title || it.key; }).filter(Boolean);
-        const dBase = getItemDescription(selectedMeta, row).trim();
-        const dExtra = activePano ? ('Current panorama: ' + (activePano.title || activePano.key || '—')) : '';
-        const dList = panoNames.length ? ('Available panoramas: ' + panoNames.join(', ')) : '';
-        const d = [dBase, dExtra, dList].filter(Boolean).join('\n');
-        descBox.style.display = d ? 'block' : 'none';
-        descBox.textContent = d;
-        adminBuildingViewsCard.style.display = 'none';
+        await renderControlsNowOrDeferred(async function(){
+          title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
+          renderUnitMetaUI(meta, row);
+          hideFinishCard();
+          if(isEditorAdmin()) populateAdminEditor(selectedMeta, row);
+          await trackUnitView(firstFilled(meta.building_key, row.building_key, row.name, row.title), getItemDisplayName(meta));
+          const panoNames = panoCfg.items.map(function(it){ return it.title || it.key; }).filter(Boolean);
+          const dBase = getItemDescription(selectedMeta, row).trim();
+          const dExtra = activePano ? ('Current panorama: ' + (activePano.title || activePano.key || '—')) : '';
+          const dList = panoNames.length ? ('Available panoramas: ' + panoNames.join(', ')) : '';
+          const d = [dBase, dExtra, dList].filter(Boolean).join('\n');
+          descBox.style.display = d ? 'block' : 'none';
+          descBox.textContent = d;
+          adminBuildingViewsCard.style.display = 'none';
 
-        const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
-        if (chartSeries) {
-          priceCanvas.style.display='block';
-          drawPriceChart(priceCanvas, chartSeries);
-        } else {
-          priceCanvas.style.display='none';
-        }
+          const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
+          if (chartSeries) {
+            priceCanvas.style.display='block';
+            drawPriceChart(priceCanvas, chartSeries);
+          } else {
+            priceCanvas.style.display='none';
+          }
 
-        const autoPrice=getCurrentPrice(meta,row);
-        const hasComparablePrice = Number.isFinite(autoPrice) && autoPrice > 0;
-        loanCard.style.display = hasComparablePrice ? 'block' : 'none';
-        compareCard.style.display = hasComparablePrice ? 'block' : 'none';
-        similarCard.style.display = hasComparablePrice ? 'block' : 'none';
-        priceCard.style.display = hasComparablePrice ? 'block' : 'none';
-        commuteCard.style.display='none';
-        if(hasComparablePrice){
-          loanPrice.value = String(autoPrice);
-          recalcLoan();
-          buildSimilarList(idx,k);
-          renderInsights(idx,k);
-        } else {
-          similarCard.style.display='none';
-          priceCard.style.display='none';
-          if (typeof compareModal !== 'undefined' && compareModal) compareModal.style.display='none';
-        }
+          const autoPrice=getCurrentPrice(meta,row);
+          const hasComparablePrice = Number.isFinite(autoPrice) && autoPrice > 0;
+          loanCard.style.display = hasComparablePrice ? 'block' : 'none';
+          compareCard.style.display = hasComparablePrice ? 'block' : 'none';
+          similarCard.style.display = hasComparablePrice ? 'block' : 'none';
+          priceCard.style.display = hasComparablePrice ? 'block' : 'none';
+          commuteCard.style.display='none';
+          if(hasComparablePrice){
+            loanPrice.value = String(autoPrice);
+            recalcLoan();
+            buildSimilarList(idx,k);
+            renderInsights(idx,k);
+          } else {
+            similarCard.style.display='none';
+            priceCard.style.display='none';
+            if (typeof compareModal !== 'undefined' && compareModal) compareModal.style.display='none';
+          }
+        });
 
+        // Panorama does not need the mini map on any platform.
         mini.setMode('hidden');
+
+        // iPhone/iPad black-first-panorama fix:
+        // if this is the first panorama selection for this item, force one explicit reload
+        // of the default panorama after the initial entity exists.
+        if(!hadStoredPanoramaSelection && activePano && activePano.url){
+          await waitMs(40);
+          await applyPanoramaSelectionForCurrent(activePano.key || activePano.title || activePano.url);
+          return;
+        }
       } else if (selectedIsAmenity) {
         const k=selectedIndex;
         const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
