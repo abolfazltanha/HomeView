@@ -509,22 +509,14 @@ function parseFutureProjects(raw){
   `;
   chartDiv.appendChild(header);
 
-  const hTitle = document.createElement('div');
-  hTitle.textContent = 'Controls';
-  hTitle.style.cssText="font-weight:700;font-size:16px";
-  header.appendChild(hTitle);
-
-  const headerLabelsWrap = null;
-
-  const headerFutureWrap = document.createElement('label');
-  headerFutureWrap.style.cssText = "display:none;align-items:center;gap:6px;font-size:12px;white-space:nowrap";
-  headerFutureWrap.innerHTML = '<input id="showFutureProjectsToggle" type="checkbox"><span>Show future</span>';
-  header.appendChild(headerFutureWrap);
+  const headerLeft = document.createElement('div');
+  headerLeft.style.cssText = "display:flex;align-items:center;gap:8px;min-width:0";
+  header.appendChild(headerLeft);
 
   const collapseBtn = document.createElement('button');
   collapseBtn.type = "button";
-  collapseBtn.textContent='▾';
-  collapseBtn.title='Collapse/Expand';
+  collapseBtn.textContent='✕';
+  collapseBtn.title='Close Controls';
   collapseBtn.className = 'ui-btn';
   collapseBtn.style.cssText = `
     width:36px;
@@ -535,16 +527,67 @@ function parseFutureProjects(raw){
     z-index:500002;
     pointer-events:auto;
     touch-action:manipulation;
+    flex:0 0 auto;
   `;
-  header.appendChild(collapseBtn);
+  headerLeft.appendChild(collapseBtn);
+
+  const hTitle = document.createElement('div');
+  hTitle.textContent = 'Controls';
+  hTitle.style.cssText="font-weight:700;font-size:16px";
+  headerLeft.appendChild(hTitle);
+
+  const headerLabelsWrap = null;
+
+  const headerFutureWrap = document.createElement('label');
+  headerFutureWrap.style.cssText = "display:none;align-items:center;gap:6px;font-size:12px;white-space:nowrap";
+  headerFutureWrap.innerHTML = '<input id="showFutureProjectsToggle" type="checkbox"><span>Show future</span>';
+  header.appendChild(headerFutureWrap);
 
   const panelBody = document.createElement('div');
   panelBody.style.cssText="display:flex;flex-direction:column;gap:8px";
   chartDiv.appendChild(panelBody);
 
-  let collapsed=false;
-  function setCollapsed(c){ collapsed=c; panelBody.style.display=c?'none':'flex'; collapseBtn.textContent=c?'▴':'▾'; }
-  collapseBtn.onclick=()=>setCollapsed(!collapsed);
+  const COLLAPSE_CONTROLS_BY_DEFAULT = !!IS_MOBILE;
+  let collapsed = false;
+  let pendingControlsHydration = null;
+  let controlsHydratedKey = '';
+
+  function getControlsSelectionKey(){
+    return [String(selectBox && selectBox.value || ''), String(viewSelect && viewSelect.value || 'exterior')].join('|');
+  }
+  function clearControlsContentForDeferredLoad(){
+    title.textContent = '';
+    descBox.textContent = '';
+    descBox.style.display = 'none';
+    hideUnitMetaUI();
+    hideFinishCard();
+    priceCanvas.style.display='none';
+    loanCard.style.display='none';
+    compareCard.style.display='none';
+    similarCard.style.display='none';
+    priceCard.style.display='none';
+    commuteCard.style.display='none';
+    try{ if (typeof compareModal !== 'undefined' && compareModal) compareModal.style.display='none'; }catch(_){ }
+  }
+  async function hydrateControlsIfNeeded(force){
+    const task = pendingControlsHydration;
+    if(!task || typeof task.fn !== 'function') return;
+    if(!force && controlsHydratedKey === task.key) return;
+    pendingControlsHydration = null;
+    await task.fn();
+    controlsHydratedKey = task.key;
+  }
+  function setCollapsed(c, opts){
+    const options = opts || {};
+    collapsed = !!c;
+    panelBody.style.display = collapsed ? 'none' : 'flex';
+    collapseBtn.textContent = collapsed ? '▸' : '✕';
+    collapseBtn.title = collapsed ? 'Open Controls' : 'Close Controls';
+    if(!collapsed){
+      hydrateControlsIfNeeded(!!options.forceHydrate).catch(function(err){ console.warn('Controls hydrate failed:', err); });
+    }
+  }
+  collapseBtn.onclick=()=>setCollapsed(!collapsed, { forceHydrate:true });
 
   const selectBox = document.createElement('select');
   selectBox.className = 'ui-select';
@@ -1308,7 +1351,7 @@ async function refreshFutureProjects(bIdx){
     } else if (preset === 'high'){ viewer.resolutionScale = Math.min(1.25, DPR); if (fxaaStage) fxaaStage.enabled = true; if ('msaaSamples' in viewer.scene) viewer.scene.msaaSamples = 4; desiredMSE=8;  if(GOOGLE_3D_TILES) GOOGLE_3D_TILES.maximumScreenSpaceError=desiredMSE;
     } else { viewer.resolutionScale = 1.0; if (fxaaStage) fxaaStage.enabled = true; if ('msaaSamples' in viewer.scene) viewer.scene.msaaSamples = 2; desiredMSE=12; if(GOOGLE_3D_TILES) GOOGLE_3D_TILES.maximumScreenSpaceError=desiredMSE; }
   }
-  let initialPreset = 'balanced';
+  let initialPreset = IS_MOBILE ? 'low' : 'balanced';
   const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
   try{ if (conn?.saveData) initialPreset = 'low'; else if (conn?.effectiveType && /(^|-)2g|(^|-)slow-2g|(^|-)3g/.test(conn.effectiveType)) initialPreset = 'low'; }catch(e){}
   applyGfxPreset(initialPreset);
@@ -2913,7 +2956,7 @@ function fmtMoneyNoDash(n){
       const planMarker=document.createElement('div'); planMarker.style.cssText='position:absolute;width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:14px solid #d32f2f;transform-origin:50% 60%'; planDiv.appendChild(planMarker);
 
       let ps={url:'',rot:0,w:10,h:10,cE:0,cN:0,nw:0,nh:0,zoom:1,ready:false,u:null,b:null};
-      function setMode(m){ cityDiv.style.display=m==='city'?'block':'none'; planDiv.style.display=m==='plan'?'block' : 'none'; }
+      function setMode(m){ root.style.display = m==='hidden' ? 'none' : 'block'; cityDiv.style.display=m==='city'?'block':'none'; planDiv.style.display=m==='plan'?'block' : 'none'; }
       function layoutPlan(){ if(!ps.ready) return; const cw=planDiv.clientWidth, ch=planDiv.clientHeight, arI=ps.nw/ps.nh, arC=cw/ch; let dw,dh; if(arI>arC){ dw=cw; dh=cw/arI; } else { dh=ch; dw=ch*arI; } dw*=ps.zoom; dh*=ps.zoom; planInner.style.width=dw+'px'; planInner.style.height=dh+'px'; }
       window.addEventListener('resize',()=>{ layoutPlan(); updatePlanCam(); });
 
@@ -3882,6 +3925,27 @@ function hideUnitMetaUI(){
   adminBuildingViewsCard.style.display='none';
   adminUnitEditorCard.style.display='none';
 }
+function shouldLazyHydrateControls(){
+  return COLLAPSE_CONTROLS_BY_DEFAULT;
+}
+async function renderControlsNowOrDeferred(renderFn){
+  const key = getControlsSelectionKey();
+  if(!shouldLazyHydrateControls()){
+    pendingControlsHydration = null;
+    controlsHydratedKey = key;
+    await renderFn();
+    return;
+  }
+  if(collapsed){
+    pendingControlsHydration = { key:key, fn:renderFn };
+    controlsHydratedKey = '';
+    clearControlsContentForDeferredLoad();
+    return;
+  }
+  pendingControlsHydration = null;
+  controlsHydratedKey = key;
+  await renderFn();
+}
 
     async function updateView(idx){
       const row=b[idx];
@@ -3995,26 +4059,28 @@ function hideUnitMetaUI(){
         const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov=Math.PI/3;
 
         syncInteriorClipForSelection(null, row, true);
-        title.textContent=row.name||'';
-        hideUnitMetaUI();
-        hideFinishCard();
-        const d = getItemDescription(row).trim();
-        descBox.style.display = d ? 'block' : 'none';
-        descBox.textContent = d;
-        if(isEditorAdmin()){
-          refreshBuildingUnitViews(firstFilled(row.building_key, row.name, row.title), { force:false, forceCsv:false });
-        }else{
-          adminBuildingViewsCard.style.display = 'none';
-        }
+        await renderControlsNowOrDeferred(async function(){
+          title.textContent=row.name||'';
+          hideUnitMetaUI();
+          hideFinishCard();
+          const d = getItemDescription(row).trim();
+          descBox.style.display = d ? 'block' : 'none';
+          descBox.textContent = d;
+          if(isEditorAdmin()){
+            refreshBuildingUnitViews(firstFilled(row.building_key, row.name, row.title), { force:false, forceCsv:false });
+          }else{
+            adminBuildingViewsCard.style.display = 'none';
+          }
 
-        priceCanvas.style.display='none';
-        loanCard.style.display='none';
-        compareCard.style.display='none';
-        similarCard.style.display='none';
-        priceCard.style.display='none';
+          priceCanvas.style.display='none';
+          loanCard.style.display='none';
+          compareCard.style.display='none';
+          similarCard.style.display='none';
+          priceCard.style.display='none';
+          updateCommute(idx);
+        });
 
         mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
-        updateCommute(idx);
       } else if (selectedIsPanorama) {
         const k=selectedIndex;
         const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
@@ -4095,8 +4161,7 @@ function hideUnitMetaUI(){
           if (typeof compareModal !== 'undefined' && compareModal) compareModal.style.display='none';
         }
 
-        mini.showPlanForUnit(idx,k,meta);
-        mini.refreshCity(idx); mini.updateCityCamera();
+        mini.setMode('hidden');
       } else if (selectedIsAmenity) {
         const k=selectedIndex;
         const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
@@ -4134,22 +4199,24 @@ function hideUnitMetaUI(){
         fovRange.value = String(saved);
         fovValEl.textContent = saved;
 
-        title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
-        hideUnitMetaUI();
-        await syncCustomizationUIForSelection(idx, k, selectedMeta, row, ent);
-        if(isEditorAdmin()) populateAdminEditor(selectedMeta, row);
-        const d = getItemDescription(selectedMeta, row).trim();
-        descBox.style.display = d ? 'block' : 'none';
-        descBox.textContent = d;
-        adminBuildingViewsCard.style.display = 'none';
+        await renderControlsNowOrDeferred(async function(){
+          title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
+          hideUnitMetaUI();
+          await syncCustomizationUIForSelection(idx, k, selectedMeta, row, ent);
+          if(isEditorAdmin()) populateAdminEditor(selectedMeta, row);
+          const d = getItemDescription(selectedMeta, row).trim();
+          descBox.style.display = d ? 'block' : 'none';
+          descBox.textContent = d;
+          adminBuildingViewsCard.style.display = 'none';
 
-        priceCanvas.style.display='none';
-        loanCard.style.display='none';
-        compareCard.style.display='none';
-        similarCard.style.display='none';
-        priceCard.style.display='none';
-        commuteCard.style.display='none';
-        if (typeof compareModal !== 'undefined' && compareModal) compareModal.style.display='none';
+          priceCanvas.style.display='none';
+          loanCard.style.display='none';
+          compareCard.style.display='none';
+          similarCard.style.display='none';
+          priceCard.style.display='none';
+          commuteCard.style.display='none';
+          if (typeof compareModal !== 'undefined' && compareModal) compareModal.style.display='none';
+        });
 
         mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
       } else {
@@ -4173,56 +4240,61 @@ function hideUnitMetaUI(){
           const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov = saved * Math.PI/180;
           fovRange.value = String(saved); fovValEl.textContent = saved;
 
-          title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
-          renderUnitMetaUI(meta, row);
-          hideFinishCard();
-          await syncCustomizationUIForSelection(idx, k, meta, row, ent);
-          if(isEditorAdmin()) populateAdminEditor(meta, row);
-          await trackUnitView(firstFilled(meta.building_key, row.building_key, row.name, row.title), getItemDisplayName(meta));
-          const d = getItemDescription(meta, row).trim();
-          descBox.style.display = d ? 'block' : 'none';
-          descBox.textContent = d;
-          adminBuildingViewsCard.style.display = 'none';
+          await renderControlsNowOrDeferred(async function(){
+            title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
+            renderUnitMetaUI(meta, row);
+            hideFinishCard();
+            await syncCustomizationUIForSelection(idx, k, meta, row, ent);
+            if(isEditorAdmin()) populateAdminEditor(meta, row);
+            await trackUnitView(firstFilled(meta.building_key, row.building_key, row.name, row.title), getItemDisplayName(meta));
+            const d = getItemDescription(meta, row).trim();
+            descBox.style.display = d ? 'block' : 'none';
+            descBox.textContent = d;
+            adminBuildingViewsCard.style.display = 'none';
 
-          const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
-          if (chartSeries) {
-            priceCanvas.style.display='block';
-            drawPriceChart(priceCanvas, chartSeries);
-          } else {
-            priceCanvas.style.display='none';
-          }
+            const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
+            if (chartSeries) {
+              priceCanvas.style.display='block';
+              drawPriceChart(priceCanvas, chartSeries);
+            } else {
+              priceCanvas.style.display='none';
+            }
 
-          loanCard.style.display='block';
-          compareCard.style.display='block';
-          similarCard.style.display='block';
-          priceCard.style.display='block';
+            loanCard.style.display='block';
+            compareCard.style.display='block';
+            similarCard.style.display='block';
+            priceCard.style.display='block';
 
-          const autoPrice=getCurrentPrice(meta,row);
-          loanPrice.value = Number.isFinite(autoPrice) && autoPrice>0 ? String(autoPrice) : '';
-          recalcLoan();
+            const autoPrice=getCurrentPrice(meta,row);
+            loanPrice.value = Number.isFinite(autoPrice) && autoPrice>0 ? String(autoPrice) : '';
+            recalcLoan();
+
+            buildSimilarList(idx,k);
+            renderInsights(idx,k);
+            updateCommute(idx);
+          });
 
           mini.showPlanForUnit(idx,k,meta);
-          buildSimilarList(idx,k);
-          renderInsights(idx,k);
-          updateCommute(idx);
         } else {
           disableInteriorClip();
           setCameraCollision(true);
           setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
-          title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
-          renderUnitMetaUI(meta, row);
-          await syncCustomizationUIForSelection(idx, k, meta, row, ent);
-          if(isEditorAdmin()) populateAdminEditor(meta, row);
-          await trackUnitView(firstFilled(meta.building_key, row.building_key, row.name, row.title), getItemDisplayName(meta));
-          const d = getItemDescription(meta, row).trim();
-          descBox.style.display = d ? 'block' : 'none';
-          descBox.textContent = d;
-          adminBuildingViewsCard.style.display = 'none';
-          priceCanvas.style.display='none';
-          loanCard.style.display='none';
-          compareCard.style.display='none';
-          similarCard.style.display='none';
-          priceCard.style.display='none';
+          await renderControlsNowOrDeferred(async function(){
+            title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
+            renderUnitMetaUI(meta, row);
+            await syncCustomizationUIForSelection(idx, k, meta, row, ent);
+            if(isEditorAdmin()) populateAdminEditor(meta, row);
+            await trackUnitView(firstFilled(meta.building_key, row.building_key, row.name, row.title), getItemDisplayName(meta));
+            const d = getItemDescription(meta, row).trim();
+            descBox.style.display = d ? 'block' : 'none';
+            descBox.textContent = d;
+            adminBuildingViewsCard.style.display = 'none';
+            priceCanvas.style.display='none';
+            loanCard.style.display='none';
+            compareCard.style.display='none';
+            similarCard.style.display='none';
+            priceCard.style.display='none';
+          });
           mini.setMode('city'); mini.refreshCity(idx); mini.updateCityCamera();
         }
       }
@@ -4234,6 +4306,8 @@ function hideUnitMetaUI(){
       applyPoiTypeFilters(idx);
     }
     selectBox.addEventListener('change',()=>refreshAllCityLayers(Number(selectBox.value)));
+
+    setCollapsed(COLLAPSE_CONTROLS_BY_DEFAULT);
 
     // init
     rebuildViewOptions(0);
