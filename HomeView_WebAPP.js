@@ -986,6 +986,83 @@ async function refreshFutureProjects(bIdx){
   tip.style.cssText="position:fixed;display:none;pointer-events:none;transform:translate(-50%,-120%);padding:8px 10px;font-size:12px;z-index:1200;max-width:260px";
   document.body.appendChild(tip);
 
+
+  // ===== Unit ad logo =====
+  const unitAdWrap = document.createElement('div');
+  unitAdWrap.className = 'ui-card';
+  unitAdWrap.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:2150;padding:8px;border-radius:14px;display:none;align-items:center;justify-content:center;max-width:min(34vw,180px);max-height:92px;box-shadow:0 10px 26px rgba(0,0,0,.18)";
+  const unitAdLink = document.createElement('a');
+  unitAdLink.style.cssText = 'display:block;line-height:0';
+  unitAdLink.rel = 'noopener noreferrer';
+  const unitAdImg = document.createElement('img');
+  unitAdImg.alt = 'Interior design partner';
+  unitAdImg.style.cssText = 'display:block;max-width:min(30vw,160px);max-height:72px;width:auto;height:auto;object-fit:contain;border-radius:8px';
+  unitAdLink.appendChild(unitAdImg);
+  unitAdWrap.appendChild(unitAdLink);
+  document.body.appendChild(unitAdWrap);
+
+  function normalizeExternalUrl(url){
+    const raw = String(url || '').trim();
+    if(!raw) return '';
+    if(/^https?:\/\//i.test(raw) || /^mailto:/i.test(raw) || /^tel:/i.test(raw)) return raw;
+    return 'https://' + raw.replace(/^\/+/, '');
+  }
+  function hideUnitAdLogo(){
+    unitAdWrap.style.display = 'none';
+    unitAdImg.removeAttribute('src');
+    unitAdLink.removeAttribute('href');
+    unitAdLink.style.cursor = 'default';
+    unitAdImg.style.cursor = 'default';
+  }
+  function getUnitAdLogoConfig(meta, row){
+    const source = meta || row || {};
+    const logoUrl = firstFilled(
+      source.ad_logo_url,
+      source.logo_image_url,
+      source.logo_url,
+      source.company_logo_url,
+      source.partner_logo_url,
+      source.ad_logo,
+      source.logo,
+      source.brand_logo,
+      source.sponsor_logo_url,
+      source.sponsor_logo
+    );
+    const linkUrl = normalizeExternalUrl(firstFilled(
+      source.ad_link_url,
+      source.logo_link_url,
+      source.website_url,
+      source.company_website,
+      source.company_url,
+      source.partner_url,
+      source.ad_link,
+      source.logo_link,
+      source.url,
+      source.website
+    ));
+    return { logoUrl: logoUrl, linkUrl: linkUrl };
+  }
+  function showUnitAdLogo(meta, row){
+    const cfg = getUnitAdLogoConfig(meta, row);
+    if(!cfg.logoUrl){
+      hideUnitAdLogo();
+      return;
+    }
+    unitAdImg.src = cfg.logoUrl;
+    if(cfg.linkUrl){
+      unitAdLink.href = cfg.linkUrl;
+      unitAdLink.target = '_blank';
+      unitAdLink.style.cursor = 'pointer';
+      unitAdImg.style.cursor = 'pointer';
+    }else{
+      unitAdLink.removeAttribute('href');
+      unitAdLink.removeAttribute('target');
+      unitAdLink.style.cursor = 'default';
+      unitAdImg.style.cursor = 'default';
+    }
+    unitAdWrap.style.display = 'flex';
+  }
+
   // ===== Mouse bindings =====
   const ssc = viewer.scene.screenSpaceCameraController;
   function setExteriorMouseBindings(){
@@ -1598,11 +1675,67 @@ async function refreshFutureProjects(bIdx){
 
     // entities
     const modelEntities=[];
+    const interiorEntryEntities=[];
     for (let i=0;i<b.length;i++){
       const row = b[i];
       const ent = await createBuildingModel(row,viewer);
       ent.show=(i===0);
       modelEntities.push(ent);
+      const entryEnt = await createInteriorEntryButton(row, viewer, i);
+      entryEnt.show = false;
+      interiorEntryEntities.push(entryEnt);
+    }
+
+    function getDirectInteriorViewValue(idx){
+      const list = interiorMetaByBuilding[idx] || [];
+      const unitIndexes = [];
+      const fallbackIndexes = [];
+      list.forEach(function(item, itemIdx){
+        if(isUnitRow(item)) unitIndexes.push(itemIdx);
+        else if(isPanoramaRow(item) || isAmenityRow(item)) fallbackIndexes.push(itemIdx);
+      });
+      if(unitIndexes.length === 1) return 'unit:' + unitIndexes[0];
+      if(unitIndexes.length > 1) return '__multi__';
+      if(fallbackIndexes.length === 1){
+        const onlyIdx = fallbackIndexes[0];
+        const onlyItem = list[onlyIdx] || null;
+        return isPanoramaRow(onlyItem) ? ('panorama:' + onlyIdx) : ('amenity:' + onlyIdx);
+      }
+      if(fallbackIndexes.length > 1) return '__multi__';
+      return '';
+    }
+    function setInteriorEntryButtonsVisibility(activeIdx, isExterior){
+      interiorEntryEntities.forEach(function(ent, i){
+        if(!ent) return;
+        ent.show = !!isExterior && i === activeIdx && !!getDirectInteriorViewValue(i);
+      });
+      requestSceneRenderBurst(2);
+    }
+    function flashViewPicker(){
+      const oldShadow = viewSelect.style.boxShadow;
+      const oldBorder = viewSelect.style.borderColor;
+      viewSelect.style.borderColor = '#1976d2';
+      viewSelect.style.boxShadow = '0 0 0 3px rgba(25,118,210,.22)';
+      setTimeout(function(){
+        viewSelect.style.boxShadow = oldShadow;
+        viewSelect.style.borderColor = oldBorder;
+      }, 1200);
+    }
+    async function handleInteriorEntryClick(buildingIdx){
+      const targetValue = getDirectInteriorViewValue(buildingIdx);
+      if(!targetValue) return false;
+      if(targetValue === '__multi__'){
+        setCollapsed(false);
+        try{ viewSelect.focus({ preventScroll:true }); }catch(_){ try{ viewSelect.focus(); }catch(__){} }
+        flashViewPicker();
+        title.textContent = (b[buildingIdx] && (b[buildingIdx].name || '')) || title.textContent;
+        descBox.style.display = 'block';
+        descBox.textContent = 'Select a unit from the list above to enter the interior.';
+        return true;
+      }
+      viewSelect.value = targetValue;
+      viewSelect.dispatchEvent(new Event('change'));
+      return true;
     }
 
     for (let i=0;i<b.length;i++) futureProjectEntitiesByBuilding[i] = [];
@@ -2715,18 +2848,36 @@ async function refreshFutureProjects(bIdx){
              || (buildingRow && (buildingRow.estimated_price_first||buildingRow.estimated_price||buildingRow.current_price));
       return parseFirstNumber(v);
     }
-    function getAreaM2(unitRow){
-      let a = unitRow ? (unitRow.area_m2||unitRow.area_sqm||unitRow.area||unitRow.square_footage) : null;
-      if(a && String(a).toLowerCase().includes('sqft')){ const n=parseFirstNumber(a); return Number.isFinite(n)? n*0.092903 : NaN; }
-      let v = parseFirstNumber(a);
+    function getAreaSqft(unitRow){
+      const sqftDirect = unitRow ? (
+        unitRow.area_sqft ||
+        unitRow.square_footage ||
+        unitRow.sqft ||
+        unitRow.sq_ft ||
+        unitRow.sqm_ft
+      ) : null;
+      let v = parseFirstNumber(sqftDirect);
       if(Number.isFinite(v)){
-        const s = String(a).toLowerCase();
-        if(s.includes('sqft') || s.includes('ft²') || s.includes('ft2') || s.includes('sq ft')) return v*0.092903;
+        const s = String(sqftDirect).toLowerCase();
+        if(s.includes('m²') || s.includes('sqm') || s.includes('sq m') || s.includes('meter')) return v * 10.7639;
         return v;
       }
-      const sqft = unitRow ? (unitRow.area_sqft||unitRow.sqm_ft) : null;
-      const s2 = parseFirstNumber(sqft);
-      return Number.isFinite(s2) ? s2*0.092903 : NaN;
+      const metricRaw = unitRow ? (unitRow.area_m2 || unitRow.area_sqm || unitRow.sqm || unitRow.area) : null;
+      v = parseFirstNumber(metricRaw);
+      if(Number.isFinite(v)){
+        const s = String(metricRaw).toLowerCase();
+        if(s.includes('sqft') || s.includes('ft²') || s.includes('ft2') || s.includes('sq ft')) return v;
+        return v * 10.7639;
+      }
+      return NaN;
+    }
+    function fmtAreaSqftValue(v, digits){
+      return Number.isFinite(v) ? v.toFixed(digits == null ? 1 : digits) + ' sqft' : '';
+    }
+    function getAreaDisplayText(unitRow, digits){
+      const sqft = getAreaSqft(unitRow);
+      if(Number.isFinite(sqft)) return fmtAreaSqftValue(sqft, digits);
+      return firstFilled(unitRow && unitRow.area_sqft, unitRow && unitRow.square_footage, unitRow && unitRow.area, unitRow && unitRow.area_m2, unitRow && unitRow.area_sqm);
     }
     function getBeds(unitRow){ const b = parseFirstNumber(unitRow && (unitRow.bedrooms||unitRow.beds||unitRow.bed)); return Number.isFinite(b)? b : null; }
 
@@ -2810,7 +2961,7 @@ function fmtMoneyNoDash(n){
       const rows=compareState.map(({bIdx,uIdx})=>{
         const br=b[bIdx], ur=(interiorMetaByBuilding[bIdx]||[])[uIdx]||{};
         const price=getCurrentPrice(ur,br);
-        const area=getAreaM2(ur);
+        const area=getAreaSqft(ur);
         const beds=getBeds(ur);
         const baths=getBaths(ur);
         const parking=getParkingSpaces(ur);
@@ -2821,7 +2972,7 @@ function fmtMoneyNoDash(n){
         return {name,price,area,beds,baths,parking,fee,year,monthly};
       });
       const head='<tr style="font-weight:700"><td></td><td>Price</td><td>Area</td><td>Beds</td><td>Baths</td><td>Parking</td><td>Fee</td><td>Year</td><td>Monthly</td></tr>';
-      const trs=rows.map(r=>`<tr><td style="font-weight:600">${r.name}</td><td>${fmtUSD(r.price)}</td><td>${Number.isFinite(r.area)?r.area.toFixed(1)+' m²':'—'}</td><td>${r.beds!=null?r.beds:'—'}</td><td>${r.baths!=null?r.baths:'—'}</td><td>${r.parking!=null?r.parking:'—'}</td><td>${fmtMoneyNoDash(r.fee)||'—'}</td><td>${r.year!=null?r.year:'—'}</td><td>${fmtUSD(r.monthly)}</td></tr>`).join('');
+      const trs=rows.map(r=>`<tr><td style="font-weight:600">${r.name}</td><td>${fmtUSD(r.price)}</td><td>${Number.isFinite(r.area)?fmtAreaSqftValue(r.area,1):'—'}</td><td>${r.beds!=null?r.beds:'—'}</td><td>${r.baths!=null?r.baths:'—'}</td><td>${r.parking!=null?r.parking:'—'}</td><td>${fmtMoneyNoDash(r.fee)||'—'}</td><td>${r.year!=null?r.year:'—'}</td><td>${fmtUSD(r.monthly)}</td></tr>`).join('');
       box.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <div style="font-weight:700">Compare Units</div>
@@ -2847,7 +2998,7 @@ function fmtMoneyNoDash(n){
       const br=b[bIdx];
       const base=list[uIdx]||{};
       const priceBase=getCurrentPrice(base,br);
-      const areaBase=getAreaM2(base);
+      const areaBase=getAreaSqft(base);
       if(!Number.isFinite(priceBase)){ similarBody.innerHTML='<div style="opacity:.7">No similar units found</div>'; return; }
 
       const priceTol=0.15*priceBase;
@@ -2862,7 +3013,7 @@ function fmtMoneyNoDash(n){
         if(!isUnitRow(ur)) return;
         const pr=getCurrentPrice(ur,br); if(!Number.isFinite(pr)) return;
         if(Math.abs(pr-priceBase)>priceTol) return;
-        const ar=getAreaM2(ur);
+        const ar=getAreaSqft(ur);
         const ba=getBaths(ur);
         const pk=getParkingSpaces(ur);
         const yr=getYearBuilt(ur);
@@ -2880,7 +3031,7 @@ function fmtMoneyNoDash(n){
         btn.className='ui-btn';
         btn.style.cssText="text-align:left;border-radius:10px;padding:8px;cursor:pointer";
         const nm=it.ur.unit_name||it.ur.name||('Unit '+(it.k+1));
-        btn.innerHTML=`<div style="font-weight:600">${nm}</div><div style="font-size:12px;opacity:.8">${fmtUSD(it.pr)} ${Number.isFinite(it.ar)?'• '+it.ar.toFixed(0)+' m²':''} ${it.ba!=null?'• '+it.ba+' bath':''} ${it.pk!=null?'• '+it.pk+' parking':''} ${it.yr!=null?'• '+it.yr:''}</div>`;
+        btn.innerHTML=`<div style="font-weight:600">${nm}</div><div style="font-size:12px;opacity:.8">${fmtUSD(it.pr)} ${Number.isFinite(it.ar)?'• '+fmtAreaSqftValue(it.ar,0):''} ${it.ba!=null?'• '+it.ba+' bath':''} ${it.pk!=null?'• '+it.pk+' parking':''} ${it.yr!=null?'• '+it.yr:''}</div>`;
         btn.onclick=()=>{ viewSelect.value='unit:'+it.k; viewSelect.dispatchEvent(new Event('change')); };
         similarBody.appendChild(btn);
       });
@@ -3831,6 +3982,12 @@ adminApplyBtn.onclick = function(){
         if(used){ tip.style.display='none'; return; }
       }
       const picked=viewer.scene.pick(m.position);
+      if(picked && picked.id && picked.id.properties && picked.id.properties.hvInteriorEntry){
+        const buildingIdx = Number(picked.id.properties.hvBuildingIndex.getValue());
+        tip.style.display='none';
+        await handleInteriorEntryClick(buildingIdx);
+        return;
+      }
       if(await handleInteractiveLabelActionFromPick(picked)){ tip.style.display='none'; return; }
       if(!picked || !picked.id || !poiIndexById.has(picked.id.id)){ tip.style.display='none'; return; }
       const ent=picked.id, props=ent.properties||{};
@@ -3911,7 +4068,7 @@ adminApplyBtn.onclick = function(){
 function renderUnitMetaUI(meta, row){
   const source = meta || row || {};
   const price = getCurrentPrice(source, row);
-  const area = getAreaM2(source);
+  const area = getAreaSqft(source);
   const beds = getBeds(source);
   const baths = getBaths(source);
   const parking = getParkingSpaces(source);
@@ -3921,7 +4078,7 @@ function renderUnitMetaUI(meta, row){
 
   renderDetailGrid(unitSpecsGrid, [
     ['Price', fmtMoneyNoDash(price)],
-    ['Area', Number.isFinite(area) ? area.toFixed(1) + ' m²' : firstFilled(source.square_footage, source.area, source.area_sqft)],
+    ['Area', getAreaDisplayText(source, 1)],
     ['Beds', beds!=null ? String(beds) : ''],
     ['Bathrooms', baths!=null ? String(baths) : '']
   ]);
@@ -3965,6 +4122,8 @@ function hideUnitMetaUI(){
       const selectedMeta=(interiorMetaByBuilding[idx]||[])[selectedIndex]||null;
       const selectedIsAmenity = !isExterior && selectedKind==='amenity' && !!selectedMeta;
       const selectedIsPanorama = !isExterior && selectedKind==='panorama' && !!selectedMeta;
+      setInteriorEntryButtonsVisibility(idx, isExterior);
+      hideUnitAdLogo();
       if(SHOULD_COLLAPSE_CONTROLS_ON_INTERIOR){
         setCollapsed(!isExterior);
       } else {
@@ -4143,6 +4302,7 @@ function hideUnitMetaUI(){
         descBox.style.display = d ? 'block' : 'none';
         descBox.textContent = d;
         adminBuildingViewsCard.style.display = 'none';
+        showUnitAdLogo(meta, row);
 
         const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
         if (chartSeries) {
@@ -4216,6 +4376,7 @@ function hideUnitMetaUI(){
         descBox.style.display = d ? 'block' : 'none';
         descBox.textContent = d;
         adminBuildingViewsCard.style.display = 'none';
+        hideUnitAdLogo();
 
         priceCanvas.style.display='none';
         loanCard.style.display='none';
@@ -4258,6 +4419,7 @@ function hideUnitMetaUI(){
           descBox.style.display = d ? 'block' : 'none';
           descBox.textContent = d;
           adminBuildingViewsCard.style.display = 'none';
+          showUnitAdLogo(meta, row);
 
           const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
           if (chartSeries) {
@@ -4294,6 +4456,7 @@ function hideUnitMetaUI(){
           descBox.style.display = d ? 'block' : 'none';
           descBox.textContent = d;
           adminBuildingViewsCard.style.display = 'none';
+          showUnitAdLogo(meta, row);
           priceCanvas.style.display='none';
           loanCard.style.display='none';
           compareCard.style.display='none';
@@ -4315,6 +4478,7 @@ function hideUnitMetaUI(){
     // init
     setCollapsed(false);
     rebuildViewOptions(0);
+    setInteriorEntryButtonsVisibility(0, true);
     updateView(0);
     requestSceneRender();
 
@@ -4334,6 +4498,41 @@ function hideUnitMetaUI(){
       model:{uri:row.model_url, minimumPixelSize:128, maximumScale:scale, scale:scale, shadows:Cesium.ShadowMode.DISABLED},
       label: row.name ? { text: row.name, font:"17px sans-serif", fillColor:Cesium.Color.YELLOW, outlineColor:Cesium.Color.BLACK, outlineWidth:2, style:Cesium.LabelStyle.FILL_AND_OUTLINE, verticalOrigin:Cesium.VerticalOrigin.BOTTOM, disableDepthTestDistance:Number.POSITIVE_INFINITY, pixelOffset:new Cesium.Cartesian2(0, -30) } : undefined,
       show:false
+    });
+  }
+
+  async function createInteriorEntryButton(row, viewer, buildingIdx){
+    const lon = toNum(row.lng), lat = toNum(row.lat);
+    const baseHeight = toNum(row.height) || 20;
+    const pos = await getBuildingSurfacePosition(lon, lat, baseHeight + 18);
+    return viewer.entities.add({
+      position: pos,
+      properties: {
+        hvInteriorEntry: true,
+        hvBuildingIndex: buildingIdx
+      },
+      label: {
+        text: 'Interior',
+        font: 'bold 15px sans-serif',
+        fillColor: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 2,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        showBackground: true,
+        backgroundColor: Cesium.Color.fromCssColorString('#1976d2').withAlpha(0.92),
+        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+        pixelOffset: new Cesium.Cartesian2(0, -44),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY
+      },
+      point: {
+        pixelSize: 10,
+        color: Cesium.Color.fromCssColorString('#1976d2'),
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY
+      },
+      show: false
     });
   }
 
