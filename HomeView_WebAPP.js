@@ -540,6 +540,17 @@ function parseFutureProjects(raw){
   hTitle.style.cssText="font-weight:700;font-size:16px";
   headerLeft.appendChild(hTitle);
 
+  const aiAdvisorBtn = document.createElement('button');
+  aiAdvisorBtn.type = 'button';
+  aiAdvisorBtn.textContent = 'AI';
+  aiAdvisorBtn.title = 'Open AI advisor';
+  aiAdvisorBtn.setAttribute('aria-label', 'Open AI advisor');
+  aiAdvisorBtn.className = 'ui-btn';
+  aiAdvisorBtn.style.cssText = 'height:32px;padding:0 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto';
+  headerLeft.appendChild(aiAdvisorBtn);
+
+  let setAiAdvisorOpen = function(){};
+
   const headerLabelsWrap = null;
 
   const headerFutureWrap = document.createElement('label');
@@ -3091,20 +3102,98 @@ function fmtMoneyNoDash(n){
       priceCard.style.display='block';
     }
 
-    // ===== Mini (city/plan) =====
+    // ===== Mini (city/plan) + floating AI advisor =====
     const mini=(function(){
+      const DEFAULT_ANAM_AGENT_ID = 'f2dc1521-b3b7-46b7-92c0-2f6c85cb8617';
+      function getAnamAgentIdFromUrl(){
+        try{
+          const params = new URLSearchParams(window.location.search || '');
+          const raw = (params.get('hx') || params.get('ax') || '').trim();
+          return raw || DEFAULT_ANAM_AGENT_ID;
+        }catch(_){
+          return DEFAULT_ANAM_AGENT_ID;
+        }
+      }
+      const ANAM_AGENT_ID = getAnamAgentIdFromUrl();
+      let anamScriptPromise = null;
+      function ensureAnamWidgetScript(){
+        if(window.customElements && window.customElements.get('anam-agent')) return Promise.resolve(true);
+        if(anamScriptPromise) return anamScriptPromise;
+        anamScriptPromise = new Promise(function(resolve, reject){
+          const existing = document.querySelector('script[data-homeview-anam-widget="1"]');
+          if(existing){
+            existing.addEventListener('load', function(){ resolve(true); }, { once:true });
+            existing.addEventListener('error', function(err){ reject(err || new Error('Anam widget failed to load')); }, { once:true });
+            return;
+          }
+          const s = document.createElement('script');
+          s.src = 'https://unpkg.com/@anam-ai/agent-widget';
+          s.async = true;
+          s.dataset.homeviewAnamWidget = '1';
+          s.onload = function(){ resolve(true); };
+          s.onerror = function(err){ reject(err || new Error('Anam widget failed to load')); };
+          document.head.appendChild(s);
+        });
+        return anamScriptPromise;
+      }
+
       const root=document.createElement('div');
       root.id='miniTopRight';
       root.className='ui-card';
-      root.style.cssText="position:fixed;right:16px;top:16px;width:240px;height:220px;border-radius:12px;z-index:2100;overflow:hidden";
+      root.style.cssText="position:fixed;right:16px;top:16px;width:260px;height:260px;border-radius:12px;z-index:2100;overflow:hidden;display:block;background:#fff";
       document.body.appendChild(root);
 
-      const cityDiv=document.createElement('div'); cityDiv.style.cssText='position:absolute;inset:0;display:block;background:#fff'; root.appendChild(cityDiv);
+      const stage=document.createElement('div');
+      stage.style.cssText='position:absolute;left:0;right:0;top:0;bottom:0;overflow:hidden;background:#fff';
+      root.appendChild(stage);
+
+      const cityDiv=document.createElement('div'); cityDiv.style.cssText='position:absolute;inset:0;display:block;background:#fff'; stage.appendChild(cityDiv);
       const map=L.map(cityDiv,{attributionControl:false,zoomControl:false,dragging:true,scrollWheelZoom:false,doubleClickZoom:false,boxZoom:false,tap:false});
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
       const layerBuildings=L.layerGroup().addTo(map);
       const layerSelected=L.layerGroup().addTo(map);
       const layerPois=L.layerGroup().addTo(map);
+
+      let anamAgentEl = null;
+      let aiOpen = false;
+      function updateAiButton(){
+        aiAdvisorBtn.style.background = aiOpen ? '#111' : '#fff';
+        aiAdvisorBtn.style.color = aiOpen ? '#fff' : '#111';
+        aiAdvisorBtn.title = aiOpen ? 'Hide AI advisor' : 'Open AI advisor';
+        aiAdvisorBtn.setAttribute('aria-label', aiOpen ? 'Hide AI advisor' : 'Open AI advisor');
+      }
+      function mountAnamAgent(){
+        if(anamAgentEl) return anamAgentEl;
+        anamAgentEl = document.createElement('anam-agent');
+        anamAgentEl.setAttribute('agent-id', ANAM_AGENT_ID);
+        anamAgentEl.style.cssText = 'display:none';
+        document.body.appendChild(anamAgentEl);
+        return anamAgentEl;
+      }
+      async function ensureAiAdvisorReady(){
+        try{
+          await ensureAnamWidgetScript();
+          return mountAnamAgent();
+        }catch(err){
+          console.warn('Failed to load Anam widget:', err);
+          return null;
+        }
+      }
+      async function setAiOpen(nextOpen){
+        const desired = !!nextOpen;
+        const agent = await ensureAiAdvisorReady();
+        if(!agent) return false;
+        aiOpen = desired;
+        agent.style.display = aiOpen ? 'block' : 'none';
+        updateAiButton();
+        return true;
+      }
+      setAiAdvisorOpen = function(force){
+        if(typeof force === 'boolean') return setAiOpen(force);
+        return setAiOpen(!aiOpen);
+      };
+      updateAiButton();
+      aiAdvisorBtn.onclick = function(){ setAiAdvisorOpen(); };
 
       const buildingMarkers=[];
       b.forEach((row,i)=>{
@@ -3122,13 +3211,14 @@ function fmtMoneyNoDash(n){
       const camMarker=L.marker([0,0],{icon:camIcon}).addTo(map);
       function updateCityCamera(){ try{ const c=Cesium.Cartographic.fromCartesian(viewer.camera.positionWC); camMarker.setLatLng([Cesium.Math.toDegrees(c.latitude), Cesium.Math.toDegrees(c.longitude)]);}catch(e){} }
 
-      const planDiv=document.createElement('div'); planDiv.style.cssText='position:absolute;inset:0;display:none;background:#fff'; root.appendChild(planDiv);
+      const planDiv=document.createElement('div'); planDiv.style.cssText='position:absolute;inset:0;display:none;background:#fff'; stage.appendChild(planDiv);
       const planInner=document.createElement('div'); planInner.style.cssText='position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)'; planDiv.appendChild(planInner);
       const planImg=document.createElement('img'); planImg.style.cssText='display:block;width:100%;height:100%;object-fit:contain'; planInner.appendChild(planImg);
       const planMarker=document.createElement('div'); planMarker.style.cssText='position:absolute;width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:14px solid #d32f2f;transform-origin:50% 60%'; planDiv.appendChild(planMarker);
 
       let ps={url:'',rot:0,w:10,h:10,cE:0,cN:0,nw:0,nh:0,zoom:1,ready:false,u:null,b:null};
-      function setMode(m){ cityDiv.style.display=m==='city'?'block':'none'; planDiv.style.display=m==='plan'?'block' : 'none'; }
+      let currentMiniMode='city';
+      function setMode(m){ currentMiniMode = (m==='plan') ? 'plan' : 'city'; cityDiv.style.display=currentMiniMode==='city'?'block':'none'; planDiv.style.display=currentMiniMode==='plan'?'block' : 'none'; }
       function layoutPlan(){ if(!ps.ready) return; const cw=planDiv.clientWidth, ch=planDiv.clientHeight, arI=ps.nw/ps.nh, arC=cw/ch; let dw,dh; if(arI>arC){ dw=cw; dh=cw/arI; } else { dh=ch; dw=ch*arI; } dw*=ps.zoom; dh*=ps.zoom; planInner.style.width=dw+'px'; planInner.style.height=dh+'px'; }
       window.addEventListener('resize',()=>{ layoutPlan(); updatePlanCam(); });
 
@@ -3168,8 +3258,7 @@ function fmtMoneyNoDash(n){
       viewer.camera.changed.addEventListener(()=>{ if(planDiv.style.display!=='block'){ updateCityCamera(); return; } if(!raf){ raf=true; requestAnimationFrame(()=>{ raf=false; updatePlanCam(); }); }});
       map.on('click',e=>{ try{ const h=viewer.camera.positionCartographic.height; viewer.camera.flyTo({destination:Cesium.Cartesian3.fromDegrees(e.latlng.lng,e.latlng.lat,h), duration:0.6}); }catch(err){} });
 
-      // zoom buttons
-      const zb=document.createElement('div'); zb.style.cssText="position:absolute;right:6px;bottom:6px;display:flex;flex-direction:column;gap:6px;z-index:50"; root.appendChild(zb);
+      const zb=document.createElement('div'); zb.style.cssText="position:absolute;right:6px;bottom:6px;display:flex;flex-direction:column;gap:6px;z-index:50"; stage.appendChild(zb);
       function zbtn(t,ttl){ const b=document.createElement('button'); b.className='ui-btn'; b.textContent=t; b.title=ttl||''; b.style.cssText='width:28px;height:28px;border-radius:8px;cursor:pointer'; return b;}
       const zp=zbtn('+','Zoom in'), zm=zbtn('−','Zoom out'); zb.appendChild(zp); zb.appendChild(zm);
       zp.onclick=()=>{ if(planDiv.style.display==='block'){ ps.zoom=Math.min(4,ps.zoom*1.25); layoutPlan(); updatePlanCam(); } else { map.zoomIn(1); } };
@@ -3179,7 +3268,11 @@ function fmtMoneyNoDash(n){
         root,
         show(){ root.style.display='block'; },
         hide(){ root.style.display='none'; },
-        setMode, refreshCity(idx){
+        setMode,
+        setPane(pane){ if(pane === 'ai'){ setAiAdvisorOpen(true); return; } setMode(pane === 'plan' ? 'plan' : 'city'); },
+        showAI(){ setAiAdvisorOpen(true); },
+        showMap(){ setMode('city'); },
+        refreshCity(idx){
           const row=b[idx]; if(!row) return;
           const lat=toNum(row.lat), lng=toNum(row.lng), radius=getPoiRadiusMeters(row, null, 800);
           try{ map.setView([lat,lng],15); }catch(e){}
@@ -3197,6 +3290,8 @@ function fmtMoneyNoDash(n){
             if(poi.name) m.bindTooltip(poi.name,{direction:'top',offset:[0,-2]});
             m.addTo(layerPois);
           });
+          setMode(currentMiniMode);
+          try{ map.invalidateSize(); }catch(_){ }
         },
         showPlanForUnit, updateCityCamera
       };
