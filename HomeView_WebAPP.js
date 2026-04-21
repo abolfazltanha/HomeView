@@ -542,7 +542,7 @@ function parseFutureProjects(raw){
 
   const aiAdvisorBtn = document.createElement('button');
   aiAdvisorBtn.type = 'button';
-  aiAdvisorBtn.textContent = 'AI';
+  aiAdvisorBtn.textContent = 'AI Advisor';
   aiAdvisorBtn.title = 'Open AI advisor';
   aiAdvisorBtn.setAttribute('aria-label', 'Open AI advisor');
   aiAdvisorBtn.className = 'ui-btn';
@@ -1277,19 +1277,39 @@ async function refreshFutureProjects(bIdx){
   setJoystickVisible(false);
 
   // ===== Admin auth (editor-only) =====
-  const ADMIN_USERNAME = 'admin';
-  const ADMIN_PASSWORD = 'HomeView2026!';
   const EDITOR_AUTH_STORAGE_KEY = 'homeview.editorAuth';
-  const EDITOR_SAVE_ENDPOINT = '/api/save-editor';
-  const EDITOR_SAVE_SECRET = '';
-  function isEditorAdmin(){
-    try{ return sessionStorage.getItem(EDITOR_AUTH_STORAGE_KEY) === '1'; }catch(_){ return false; }
-  }
-  function setEditorAdmin(v){
+  function getEditorAuthState(){
     try{
-      if(v) sessionStorage.setItem(EDITOR_AUTH_STORAGE_KEY,'1');
-      else sessionStorage.removeItem(EDITOR_AUTH_STORAGE_KEY);
+      const raw = sessionStorage.getItem(EDITOR_AUTH_STORAGE_KEY) || '';
+      if(!raw) return null;
+      const parsed = JSON.parse(raw);
+      if(parsed && parsed.username && parsed.password) return parsed;
     }catch(_){ }
+    return null;
+  }
+  function isEditorAdmin(){
+    return !!getEditorAuthState();
+  }
+  function setEditorAdminAuth(username, password){
+    try{
+      sessionStorage.setItem(EDITOR_AUTH_STORAGE_KEY, JSON.stringify({
+        username: String(username || '').trim(),
+        password: String(password || '')
+      }));
+    }catch(_){ }
+  }
+  function clearEditorAdminAuth(){
+    try{ sessionStorage.removeItem(EDITOR_AUTH_STORAGE_KEY); }catch(_){ }
+  }
+  async function fetchAdminJson(action, extra){
+    const auth = getEditorAuthState();
+    if(!auth || !auth.username || !auth.password){
+      throw new Error('Admin login required');
+    }
+    return fetchAppJson(action, Object.assign({
+      editor_username: auth.username,
+      editor_password: auth.password
+    }, extra || {}));
   }
 
   // ===== Graphics quick menu (⚙️) =====
@@ -1338,6 +1358,11 @@ async function refreshFutureProjects(bIdx){
   const editorLoginBtn = editorAuthWrap.querySelector('#editorLoginBtn');
   const editorLogoutBtn = editorAuthWrap.querySelector('#editorLogoutBtn');
   const editorAuthStatus = editorAuthWrap.querySelector('#editorAuthStatus');
+  const openAnalyticsBtn = document.createElement('button');
+  openAnalyticsBtn.className = 'ui-btn';
+  openAnalyticsBtn.textContent = 'Analytics';
+  openAnalyticsBtn.style.cssText = 'width:100%;display:none;';
+  editorAuthWrap.appendChild(openAnalyticsBtn);
 
   const fovValEl = fovWrap.querySelector('#fovVal');
   const fovRange = fovWrap.querySelector('#fovRange');
@@ -1358,10 +1383,12 @@ async function refreshFutureProjects(bIdx){
   gfxBtn.addEventListener('click', ()=>{ gfxCard.style.display = (gfxCard.style.display === 'none' || !gfxCard.style.display) ? 'block' : 'none'; });
 
   function updateEditorAuthUI(){
-    const unlocked = isEditorAdmin();
+    const auth = getEditorAuthState();
+    const unlocked = !!auth;
     openEditorAuthBtn.textContent = unlocked ? 'Editor unlocked' : 'Enter editor';
-    editorAuthStatus.textContent = unlocked ? 'Editor mode is unlocked on this device session.' : 'Editor mode is locked.';
+    editorAuthStatus.textContent = unlocked ? ('Editor mode is unlocked for ' + auth.username + '.') : 'Editor mode is locked.';
     editorLogoutBtn.style.display = unlocked ? 'inline-flex' : 'none';
+    openAnalyticsBtn.style.display = unlocked ? 'inline-flex' : 'none';
     if(!unlocked){
       editorPasswordInput.value = '';
     }
@@ -1369,7 +1396,7 @@ async function refreshFutureProjects(bIdx){
       if(typeof syncLabelToolsVisibility === 'function') syncLabelToolsVisibility();
       if(typeof refreshLabelListUI === 'function') refreshLabelListUI();
       if(typeof renderActiveLabels === 'function') renderActiveLabels();
-    }catch(_){}
+    }catch(_){ }
   }
   openEditorAuthBtn.addEventListener('click', ()=>{
     editorAuthPanel.style.display = (editorAuthPanel.style.display === 'none' || !editorAuthPanel.style.display) ? 'flex' : 'none';
@@ -1377,29 +1404,298 @@ async function refreshFutureProjects(bIdx){
       setTimeout(()=>{ try{ editorUsernameInput.focus(); }catch(_){ } }, 0);
     }
   });
-  editorLoginBtn.addEventListener('click', ()=>{
+  editorLoginBtn.addEventListener('click', async ()=>{
     const u = String(editorUsernameInput.value || '').trim();
     const p = String(editorPasswordInput.value || '');
-    if(u === ADMIN_USERNAME && p === ADMIN_PASSWORD){
-      setEditorAdmin(true);
-      editorPasswordInput.value = '';
-      editorAuthStatus.textContent = 'Login successful. Editor mode is now unlocked.';
-      updateEditorAuthUI();
-      try{
-        if(typeof syncLabelToolsVisibility === 'function') syncLabelToolsVisibility();
-        if(typeof refreshLabelListUI === 'function') refreshLabelListUI();
-      }catch(_){}
-    }else{
-      editorAuthStatus.textContent = 'Incorrect username or password.';
+    if(!u || !p){
+      editorAuthStatus.textContent = 'Enter username and password.';
+      return;
+    }
+    editorLoginBtn.disabled = true;
+    editorAuthStatus.textContent = 'Checking access...';
+    try{
+      const result = await fetchAppJson('verify_admin_login', {
+        editor_username: u,
+        editor_password: p
+      });
+      if(result && result.ok){
+        setEditorAdminAuth(u, p);
+        editorPasswordInput.value = '';
+        editorAuthStatus.textContent = 'Login successful. Editor mode is now unlocked.';
+        updateEditorAuthUI();
+      }else{
+        clearEditorAdminAuth();
+        editorAuthStatus.textContent = (result && result.error) ? result.error : 'Incorrect username or password.';
+      }
+    }catch(err){
+      clearEditorAdminAuth();
+      editorAuthStatus.textContent = 'Login failed: ' + String(err && err.message ? err.message : err);
+    }finally{
+      editorLoginBtn.disabled = false;
     }
   });
   editorLogoutBtn.addEventListener('click', ()=>{
-    setEditorAdmin(false);
+    clearEditorAdminAuth();
     editorPasswordInput.value = '';
     editorAuthStatus.textContent = 'You have been logged out from editor mode.';
     updateEditorAuthUI();
   });
   updateEditorAuthUI();
+
+
+  const analyticsOverlay = document.createElement('div');
+  analyticsOverlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.38);display:none;align-items:center;justify-content:center;z-index:2300;padding:20px;';
+  const analyticsModal = document.createElement('div');
+  analyticsModal.className = 'ui-card';
+  analyticsModal.style.cssText = 'width:min(1100px,96vw);max-height:88vh;overflow:auto;border-radius:18px;padding:16px;box-shadow:0 18px 44px rgba(0,0,0,.25);';
+  analyticsModal.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:20px;font-weight:700">HomeView Analytics</div>
+        <div style="font-size:12px;color:#666">Building performance and AI advisor insights</div>
+      </div>
+      <button id="analyticsCloseBtn" class="ui-btn" style="border-radius:10px;padding:8px 12px;cursor:pointer">Close</button>
+    </div>
+    <div id="analyticsStatus" style="font-size:12px;color:#666;margin-bottom:12px;">Loading analytics…</div>
+    <div id="analyticsCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px"></div>
+    <div style="display:grid;grid-template-columns:1.1fr .9fr;gap:14px;align-items:start;">
+      <div style="display:flex;flex-direction:column;gap:14px;min-width:0;">
+        <div class="ui-card" style="padding:12px;border-radius:14px;">
+          <div style="font-weight:700;margin-bottom:8px">Activity Over Time</div>
+          <div style="height:220px"><canvas id="analyticsSessionsChart"></canvas></div>
+        </div>
+        <div class="ui-card" style="padding:12px;border-radius:14px;">
+          <div style="font-weight:700;margin-bottom:8px">Top AI Topics</div>
+          <div style="height:240px"><canvas id="analyticsTopicsChart"></canvas></div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px;min-width:0;">
+        <div class="ui-card" style="padding:12px;border-radius:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+            <div style="font-weight:700">Most Viewed Buildings</div>
+            <button id="analyticsShowAllBuildingsBtn" class="ui-btn" style="border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer">Show all</button>
+          </div>
+          <div id="analyticsBuildingsList" style="display:flex;flex-direction:column;gap:8px"></div>
+          <div id="analyticsBuildingsAll" style="display:none;flex-direction:column;gap:8px;margin-top:10px"></div>
+        </div>
+        <div class="ui-card" style="padding:12px;border-radius:14px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+            <div style="font-weight:700">Most Viewed Units</div>
+            <button id="analyticsShowAllUnitsBtn" class="ui-btn" style="border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer">Show all</button>
+          </div>
+          <div id="analyticsUnitsList" style="display:flex;flex-direction:column;gap:8px"></div>
+          <div id="analyticsUnitsAll" style="display:none;flex-direction:column;gap:8px;margin-top:10px"></div>
+        </div>
+        <div class="ui-card" style="padding:12px;border-radius:14px;">
+          <div style="font-weight:700;margin-bottom:8px">AI Insights</div>
+          <div id="analyticsInsightsList" style="display:flex;flex-direction:column;gap:10px"></div>
+          <div id="analyticsAiBreakdown" style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:12px"></div>
+        </div>
+      </div>
+    </div>`;
+  analyticsOverlay.appendChild(analyticsModal);
+  document.body.appendChild(analyticsOverlay);
+  const analyticsCloseBtn = analyticsModal.querySelector('#analyticsCloseBtn');
+  const analyticsStatus = analyticsModal.querySelector('#analyticsStatus');
+  const analyticsCards = analyticsModal.querySelector('#analyticsCards');
+  const analyticsBuildingsList = analyticsModal.querySelector('#analyticsBuildingsList');
+  const analyticsBuildingsAll = analyticsModal.querySelector('#analyticsBuildingsAll');
+  const analyticsShowAllBuildingsBtn = analyticsModal.querySelector('#analyticsShowAllBuildingsBtn');
+  const analyticsUnitsList = analyticsModal.querySelector('#analyticsUnitsList');
+  const analyticsUnitsAll = analyticsModal.querySelector('#analyticsUnitsAll');
+  const analyticsShowAllUnitsBtn = analyticsModal.querySelector('#analyticsShowAllUnitsBtn');
+  const analyticsInsightsList = analyticsModal.querySelector('#analyticsInsightsList');
+  const analyticsAiBreakdown = analyticsModal.querySelector('#analyticsAiBreakdown');
+  const analyticsSessionsChart = analyticsModal.querySelector('#analyticsSessionsChart');
+  const analyticsTopicsChart = analyticsModal.querySelector('#analyticsTopicsChart');
+  let analyticsSessionsChartRef = null;
+  let analyticsTopicsChartRef = null;
+  function closeAnalyticsModal(){ analyticsOverlay.style.display = 'none'; }
+  analyticsCloseBtn.addEventListener('click', closeAnalyticsModal);
+  analyticsOverlay.addEventListener('click', function(evt){ if(evt.target === analyticsOverlay) closeAnalyticsModal(); });
+  function csvList(v){ return String(v || '').split(',').map(function(item){ return String(item || '').trim(); }).filter(Boolean); }
+  function makeMetricCard(label, value){
+    const card = document.createElement('div');
+    card.className = 'ui-card';
+    card.style.cssText = 'padding:12px;border-radius:14px;';
+    card.innerHTML = '<div style="font-size:12px;color:#666;margin-bottom:4px">' + label + '</div><div style="font-size:22px;font-weight:700">' + value + '</div>';
+    return card;
+  }
+  function makeRankRow(name, value){
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;gap:10px;padding:8px 10px;border-radius:10px;background:#f8f8f8;font-size:13px';
+    row.innerHTML = '<div style="min-width:0;word-break:break-word">' + name + '</div><div style="font-weight:700;margin-left:8px">' + value + '</div>';
+    return row;
+  }
+
+  function makeBulletCard(title, entries){
+    const card = document.createElement('div');
+    card.className = 'ui-card';
+    card.style.cssText = 'padding:10px;border-radius:12px;';
+    const safeEntries = (entries || []).filter(Boolean);
+    card.innerHTML = '<div style="font-weight:700;margin-bottom:8px">' + title + '</div>';
+    const body = document.createElement('div');
+    body.style.cssText = 'display:flex;flex-direction:column;gap:6px';
+    if(!safeEntries.length){
+      body.appendChild(makeRankRow('No data yet', '—'));
+    }else{
+      safeEntries.forEach(function(item){
+        body.appendChild(makeRankRow(item[0], item[1]));
+      });
+    }
+    card.appendChild(body);
+    return card;
+  }
+  function setToggleButtonState(btn, expanded){
+    btn.textContent = expanded ? 'Show less' : 'Show all';
+  }
+  function aggregateCounts(rows, keyGetter){
+    const map = new Map();
+    (rows || []).forEach(function(row){
+      const items = keyGetter(row) || [];
+      items.forEach(function(item){
+        const clean = String(item || '').trim();
+        if(!clean) return;
+        map.set(clean, (map.get(clean) || 0) + 1);
+      });
+    });
+    return Array.from(map.entries()).sort(function(a,b){ return b[1]-a[1]; });
+  }
+  function renderAnalyticsDashboard(data){
+    const buildings = (data && data.buildings) || (latestPublicData && latestPublicData.buildings) || [];
+    const interiors = (data && data.interiors) || (latestPublicData && latestPublicData.interiors) || [];
+    const views = (data && data.views) || [];
+    const aiRows = (data && data.ai_analytics) || [];
+    analyticsCards.innerHTML = '';
+    const totalViews = views.reduce(function(sum,row){ return sum + (parseInt(String(row.views || 0),10) || 0); }, 0);
+    const totalAiConversations = aiRows.reduce(function(sum,row){ return sum + (parseInt(String(row.total_ai_conversations || 0),10) || 0); }, 0);
+    const totalAiMinutes = aiRows.reduce(function(sum,row){ return sum + (parseFloat(String(row.total_ai_minutes || 0)) || 0); }, 0);
+    const totalSessions = aiRows.reduce(function(sum,row){ return sum + (parseInt(String(row.total_sessions || 0),10) || 0); }, 0);
+    [
+      ['Buildings', (data && data.building_count) || buildings.length || 0],
+      ['Units', (data && data.unit_count) || interiors.filter(function(item){ return isUnitRow(item); }).length || 0],
+      ['Unit Views', totalViews.toLocaleString()],
+      ['AI Sessions', totalSessions.toLocaleString()],
+      ['AI Conversations', totalAiConversations.toLocaleString()],
+      ['AI Minutes', totalAiMinutes.toLocaleString()]
+    ].forEach(function(item){ analyticsCards.appendChild(makeMetricCard(item[0], item[1])); });
+
+    const buildingAgg = new Map();
+    const unitAgg = [];
+    views.forEach(function(row){
+      const buildingKey = firstFilled(row.building_key, row.name, 'Unknown');
+      const unitName = firstFilled(row.unit_name, row.title, 'Unknown');
+      const count = parseInt(String(row.views || 0), 10) || 0;
+      buildingAgg.set(buildingKey, (buildingAgg.get(buildingKey) || 0) + count);
+      unitAgg.push({ name: buildingKey + ' / ' + unitName, views: count });
+    });
+    analyticsBuildingsList.innerHTML = '';
+    analyticsBuildingsAll.innerHTML = '';
+    analyticsBuildingsAll.style.display = 'none';
+    setToggleButtonState(analyticsShowAllBuildingsBtn, false);
+    const buildingsAll = Array.from(buildingAgg.entries()).sort(function(a,b){ return b[1]-a[1]; });
+    const buildingsTop = buildingsAll.slice(0,5);
+    if(!buildingsTop.length){ analyticsBuildingsList.appendChild(makeRankRow('No building view data yet', '—')); }
+    else buildingsTop.forEach(function(item){ analyticsBuildingsList.appendChild(makeRankRow(item[0], item[1])); });
+    if(buildingsAll.length > 5){
+      buildingsAll.forEach(function(item){ analyticsBuildingsAll.appendChild(makeRankRow(item[0], item[1])); });
+      analyticsShowAllBuildingsBtn.style.display = 'inline-flex';
+    } else {
+      analyticsShowAllBuildingsBtn.style.display = 'none';
+    }
+
+    analyticsUnitsList.innerHTML = '';
+    analyticsUnitsAll.innerHTML = '';
+    analyticsUnitsAll.style.display = 'none';
+    setToggleButtonState(analyticsShowAllUnitsBtn, false);
+    const unitsAll = unitAgg.sort(function(a,b){ return b.views-a.views; });
+    const unitsTop = unitsAll.slice(0,5);
+    if(!unitsTop.length){ analyticsUnitsList.appendChild(makeRankRow('No unit view data yet', '—')); }
+    else unitsTop.forEach(function(item){ analyticsUnitsList.appendChild(makeRankRow(item.name, item.views)); });
+    if(unitsAll.length > 5){
+      unitsAll.forEach(function(item){ analyticsUnitsAll.appendChild(makeRankRow(item.name, item.views)); });
+      analyticsShowAllUnitsBtn.style.display = 'inline-flex';
+    } else {
+      analyticsShowAllUnitsBtn.style.display = 'none';
+    }
+
+    analyticsInsightsList.innerHTML = '';
+    analyticsAiBreakdown.innerHTML = '';
+    if(!aiRows.length){
+      analyticsInsightsList.appendChild(makeRankRow('No AI analytics data yet', '—'));
+    } else {
+      const latest = aiRows.slice().sort(function(a,b){ return String(b.date||'').localeCompare(String(a.date||'')); })[0] || {};
+      const questionCounts = aggregateCounts(aiRows, function(row){ return csvList(row.top_questions); }).slice(0,5);
+      const concernCounts = aggregateCounts(aiRows, function(row){ return csvList(row.top_concerns); }).slice(0,5);
+      const interestCounts = aggregateCounts(aiRows, function(row){ return csvList(row.top_interests); }).slice(0,5);
+      const intentCounts = aggregateCounts(aiRows, function(row){ return csvList(row.buyer_intent); }).slice(0,5);
+      [
+        ['Latest insight', firstFilled(latest.insight, 'No insight added yet')],
+        ['Latest trend', firstFilled(latest.trend, 'No trend added yet')],
+        ['Buyer intent', firstFilled(latest.buyer_intent, 'Unknown')],
+        ['Top concern', csvList(latest.top_concerns).join(', ') || '—'],
+        ['Top interest', csvList(latest.top_interests).join(', ') || '—']
+      ].forEach(function(item){ analyticsInsightsList.appendChild(makeRankRow(item[0], item[1])); });
+      analyticsAiBreakdown.appendChild(makeBulletCard('Top 5 Questions', questionCounts));
+      analyticsAiBreakdown.appendChild(makeBulletCard('Top 5 Concerns', concernCounts));
+      analyticsAiBreakdown.appendChild(makeBulletCard('Top 5 Interests', interestCounts));
+      analyticsAiBreakdown.appendChild(makeBulletCard('Buyer Intent Breakdown', intentCounts));
+    }
+
+    try{ if(analyticsSessionsChartRef) analyticsSessionsChartRef.destroy(); }catch(_){ }
+    try{ if(analyticsTopicsChartRef) analyticsTopicsChartRef.destroy(); }catch(_){ }
+    const chartLabels = aiRows.map(function(row){ return row.date || ''; });
+    analyticsSessionsChartRef = new Chart(analyticsSessionsChart.getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: chartLabels,
+        datasets: [
+          { label:'Sessions', data: aiRows.map(function(row){ return parseInt(String(row.total_sessions || 0),10) || 0; }), tension:0.3 },
+          { label:'AI Minutes', data: aiRows.map(function(row){ return parseFloat(String(row.total_ai_minutes || 0)) || 0; }), tension:0.3 }
+        ]
+      },
+      options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:true}}, scales:{y:{beginAtZero:true}} }
+    });
+    const topicCounts = aggregateCounts(aiRows, function(row){ return csvList(row.top_questions).concat(csvList(row.top_concerns), csvList(row.top_interests)); }).slice(0,6);
+    analyticsTopicsChartRef = new Chart(analyticsTopicsChart.getContext('2d'), {
+      type: 'bar',
+      data: { labels: topicCounts.map(function(item){ return item[0]; }), datasets: [{ label:'Mentions', data: topicCounts.map(function(item){ return item[1]; }) }] },
+      options: { responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{y:{beginAtZero:true}} }
+    });
+    analyticsStatus.textContent = 'Analytics updated from secure admin data.';
+  }
+  analyticsShowAllBuildingsBtn.addEventListener('click', function(){
+    const expanded = analyticsBuildingsAll.style.display !== 'none';
+    analyticsBuildingsAll.style.display = expanded ? 'none' : 'flex';
+    setToggleButtonState(analyticsShowAllBuildingsBtn, !expanded);
+  });
+  analyticsShowAllUnitsBtn.addEventListener('click', function(){
+    const expanded = analyticsUnitsAll.style.display !== 'none';
+    analyticsUnitsAll.style.display = expanded ? 'none' : 'flex';
+    setToggleButtonState(analyticsShowAllUnitsBtn, !expanded);
+  });
+  openAnalyticsBtn.addEventListener('click', async function(){
+    analyticsOverlay.style.display = 'flex';
+    analyticsStatus.textContent = 'Loading analytics…';
+    analyticsCards.innerHTML = '';
+    analyticsBuildingsList.innerHTML = '';
+    analyticsBuildingsAll.innerHTML = '';
+    analyticsUnitsList.innerHTML = '';
+    analyticsUnitsAll.innerHTML = '';
+    analyticsInsightsList.innerHTML = '';
+    analyticsAiBreakdown.innerHTML = '';
+    analyticsBuildingsAll.style.display = 'none';
+    analyticsUnitsAll.style.display = 'none';
+    setToggleButtonState(analyticsShowAllBuildingsBtn, false);
+    setToggleButtonState(analyticsShowAllUnitsBtn, false);
+    try{
+      const dashboard = await fetchAdminJson('get_admin_dashboard');
+      if(!dashboard || !dashboard.ok) throw new Error((dashboard && dashboard.error) || 'Unable to load analytics');
+      renderAnalyticsDashboard(dashboard);
+    }catch(err){
+      analyticsStatus.textContent = 'Analytics load failed: ' + String(err && err.message ? err.message : err);
+    }
+  });
 
   try{ presetSelect.value = IS_MOBILE ? 'low' : 'balanced'; }catch(_){ }
 
@@ -1420,7 +1716,7 @@ async function refreshFutureProjects(bIdx){
 
   // ===== Dynamic project source (single sheet_id + single Apps Script URL) =====
   const DEFAULT_SPREADSHEET_ID = "1ub-9XgxyuuLZPqO83hNjP3Gzm-uKMki_VtGrHeJiABI";
-  const DEFAULT_APP_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzIiszffeGdD1fnvB0iHNVzwYD3izOcVMlwQnZqVjQ3gqFCbmKPb2voejL1re1pBxL44w/exec";
+  const DEFAULT_APP_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzZ2EJkpM5ufjauz4RZV8oWPpU-7Nz4O-ghvGQk_Bft3uy6wzy_u3_WIWqA4AgIrjA3mg/exec";
   const APP_SCRIPT_SECRET = "homeview123";
 
   function safeSessionGet(key){
@@ -1482,6 +1778,7 @@ async function refreshFutureProjects(bIdx){
   }
 
   let buildingsData = [];
+  let latestPublicData = null;
 
   // ===== Load & Build =====
   fetchAppJson('get_all_data').then(async (allData)=>{
@@ -1491,6 +1788,7 @@ async function refreshFutureProjects(bIdx){
     const p = (allData.pois || []).map(canonicalizeRow).filter(r=>r.name && r.lat && r.lng && r.type);
     const inter = (allData.interiors || []).map(canonicalizeRow).filter(r=>(r.unit_name || r.name || r.title) && (r.building_key || r.parent || r.name));
     const viewRows = (allData.views || []).map(canonicalizeRow);
+    latestPublicData = { buildings: b, interiors: inter, pois: p, views: viewRows };
 
     function toViewCount(v){
       const n = parseInt(String(v == null ? '' : v).replace(/[^0-9-]/g,''), 10);
@@ -1589,37 +1887,12 @@ async function refreshFutureProjects(bIdx){
     }
 
     function renderAdminBuildingViews(buildingKey){
-      if(!isEditorAdmin()){
-        adminBuildingViewsCard.style.display = 'none';
-        adminBuildingViewsSummary.textContent = '';
-        adminBuildingViewsList.innerHTML = '';
-        return;
-      }
-      const rows = getBuildingUnitViews(buildingKey);
-      const total = rows.reduce(function(sum, item){ return sum + toViewCount(item.views); }, 0);
-      adminBuildingViewsSummary.innerHTML = '<div><strong>Total Unit Views:</strong> ' + total.toLocaleString() + '</div>';
+      adminBuildingViewsCard.style.display = 'none';
+      adminBuildingViewsSummary.textContent = '';
       adminBuildingViewsList.innerHTML = '';
-      if(!rows.length){
-        const empty = document.createElement('div');
-        empty.style.cssText = 'font-size:12px;color:#666';
-        empty.textContent = 'No unit view data found for this building yet.';
-        adminBuildingViewsList.appendChild(empty);
-      }else{
-        rows.forEach(function(item){
-          const rowEl = document.createElement('div');
-          rowEl.style.cssText = 'display:flex;justify-content:space-between;gap:10px;font-size:13px;padding:6px 8px;border-radius:8px;background:#f8f8f8';
-          const nameEl = document.createElement('div');
-          nameEl.textContent = item.unit_name;
-          const valueEl = document.createElement('div');
-          valueEl.style.cssText = 'font-weight:700';
-          valueEl.textContent = String(toViewCount(item.views));
-          rowEl.appendChild(nameEl);
-          rowEl.appendChild(valueEl);
-          adminBuildingViewsList.appendChild(rowEl);
-        });
-      }
-      adminBuildingViewsCard.style.display = 'block';
+      return;
     }
+
 
     async function refreshBuildingUnitViews(buildingKey, opts){
       const options = opts || {};
@@ -3156,9 +3429,23 @@ function fmtMoneyNoDash(n){
 
       let anamAgentEl = null;
       let aiOpen = false;
+      const AI_ADVISOR_LIMIT_SECONDS = 180;
+      let aiSecondsLeft = AI_ADVISOR_LIMIT_SECONDS;
+      let aiTimerInterval = null;
+      function formatAiCountdown(totalSeconds){
+        const sec = Math.max(0, Number(totalSeconds) || 0);
+        const mm = String(Math.floor(sec / 60));
+        const ss = String(sec % 60).padStart(2, '0');
+        return mm + ':' + ss;
+      }
+      function stopAiTimer(reset){
+        if(aiTimerInterval){ clearInterval(aiTimerInterval); aiTimerInterval = null; }
+        if(reset) aiSecondsLeft = AI_ADVISOR_LIMIT_SECONDS;
+      }
       function updateAiButton(){
         aiAdvisorBtn.style.background = aiOpen ? '#111' : '#fff';
         aiAdvisorBtn.style.color = aiOpen ? '#fff' : '#111';
+        aiAdvisorBtn.textContent = aiOpen ? ('AI Advisor ' + formatAiCountdown(aiSecondsLeft)) : 'AI Advisor';
         aiAdvisorBtn.title = aiOpen ? 'Hide AI advisor' : 'Open AI advisor';
         aiAdvisorBtn.setAttribute('aria-label', aiOpen ? 'Hide AI advisor' : 'Open AI advisor');
       }
@@ -3179,12 +3466,26 @@ function fmtMoneyNoDash(n){
           return null;
         }
       }
+      function startAiTimer(){
+        stopAiTimer(true);
+        updateAiButton();
+        aiTimerInterval = setInterval(function(){
+          aiSecondsLeft = Math.max(0, aiSecondsLeft - 1);
+          updateAiButton();
+          if(aiSecondsLeft <= 0){
+            stopAiTimer(true);
+            setAiOpen(false);
+          }
+        }, 1000);
+      }
       async function setAiOpen(nextOpen){
         const desired = !!nextOpen;
         const agent = await ensureAiAdvisorReady();
         if(!agent) return false;
         aiOpen = desired;
         agent.style.display = aiOpen ? 'block' : 'none';
+        if(aiOpen) startAiTimer();
+        else stopAiTimer(true);
         updateAiButton();
         return true;
       }
@@ -3814,7 +4115,7 @@ function populateAdminEditor(meta, row){
 
 async function saveEditorPayloadToSheet(payload){
   try{
-    const response = await fetchAppJson('save_interior_updates', payload);
+    const response = await fetchAdminJson('save_interior_updates', payload);
     return response;
   }catch(err){
     return { ok:false, error: String(err && err.message ? err.message : err) };
