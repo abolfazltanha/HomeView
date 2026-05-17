@@ -40,6 +40,9 @@ forceLightCSS.textContent = `
   }
   /* white background for selects in iOS */
   select { background-color:#fff !important; }
+  .hv-section-title { font-weight:700; font-size:12px; letter-spacing:.02em; color:#444 !important; margin:4px 0 -4px; }
+  .hv-filter-chip { transition: background .15s ease, color .15s ease, border-color .15s ease, opacity .15s ease, transform .15s ease; }
+  .hv-filter-chip:hover { transform: translateY(-1px); }
 `;
 document.head.appendChild(forceLightCSS);
 
@@ -73,6 +76,42 @@ Promise.all([
     || (window.innerWidth <= 640);
   const SHOULD_COLLAPSE_CONTROLS_ON_INTERIOR = IS_MOBILE;
 
+  // ===== HomeView UX defaults (2026 UX polish pass) =====
+  const DEFAULT_MORTGAGE_RATE_APR = 3.6;
+  const DEFAULT_MORTGAGE_TERM_YEARS = 25;
+  const DEFAULT_INTERIOR_FOV_DEG = 100;
+  let currentModelQualityPreset = 'standard';
+  let cameraJoystickEnabledByUser = true;
+  let minimapEnabledByUser = true;
+  let reloadActiveInteriorForModelQuality = function(){};
+
+  function normalizePoiType(type){
+    return String(type || '').trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+  }
+  const AMENITY_STYLE_BY_TYPE = {
+    'hospital': { color:'#2e7d57', bg:'#e8f5ee', icon:'🏥', label:'Hospital' },
+    'atm': { color:'#b28704', bg:'#fff8df', icon:'💳', label:'ATM' },
+    'gas station': { color:'#d66b00', bg:'#fff1e2', icon:'⛽', label:'Gas Station' },
+    'park': { color:'#3f8f3f', bg:'#eaf7e8', icon:'🌳', label:'Park' },
+    'school': { color:'#d57900', bg:'#fff2df', icon:'🎓', label:'School' },
+    'shopping mall': { color:'#8e44ad', bg:'#f4eafa', icon:'🛍️', label:'Shopping Mall' },
+    'subway station': { color:'#1565c0', bg:'#e7f0fb', icon:'🚇', label:'Subway Station' },
+    'supermarket': { color:'#c62828', bg:'#fdeaea', icon:'🛒', label:'Supermarket' },
+    'restaurant': { color:'#d84315', bg:'#fff0e9', icon:'🍽️', label:'Restaurant' },
+    'cafe': { color:'#795548', bg:'#f3ede9', icon:'☕', label:'Cafe' },
+    'bank': { color:'#546e7a', bg:'#eef3f5', icon:'🏦', label:'Bank' },
+    'pharmacy': { color:'#00897b', bg:'#e3f6f3', icon:'💊', label:'Pharmacy' },
+    'future projects': { color:'#d32f2f', bg:'#ffebee', icon:'🏗️', label:'Future Projects' }
+  };
+  function getAmenityStyle(type){
+    const key = normalizePoiType(type);
+    if(AMENITY_STYLE_BY_TYPE[key]) return AMENITY_STYLE_BY_TYPE[key];
+    const title = key ? key.replace(/\b\w/g, function(c){ return c.toUpperCase(); }) : 'Amenity';
+    return { color:'#455a64', bg:'#edf2f4', icon:'📍', label:title };
+  }
+  function getAmenityDisplayLabel(type){ return getAmenityStyle(type).label; }
+  function getAmenityIcon(type){ return getAmenityStyle(type).icon; }
+
   // ========== Cesium Viewer ==========
   // IMPORTANT:
   // 1) Cesium.Ion.defaultAccessToken must be set in index.html BEFORE this file loads.
@@ -83,6 +122,10 @@ Promise.all([
     sceneModePicker: false,
     baseLayerPicker: false,
     geocoder: false,
+    homeButton: false,
+    navigationHelpButton: false,
+    fullscreenButton: false,
+    vrButton: false,
     globe: false,
     skyAtmosphere: new Cesium.SkyAtmosphere(),
     infoBox: false,
@@ -105,6 +148,16 @@ Promise.all([
     msaaSamples: IS_MOBILE ? 1 : (IS_IOS ? 2 : 4),
   });
 
+  function hideBuiltInCesiumButtons(){
+    try{
+      ['.cesium-home-button','.cesium-navigation-help-button','.cesium-viewer-toolbar','.cesium-fullscreenButton'].forEach(function(sel){
+        document.querySelectorAll(sel).forEach(function(el){ el.style.display = 'none'; });
+      });
+    }catch(_){ }
+  }
+  hideBuiltInCesiumButtons();
+  setTimeout(hideBuiltInCesiumButtons, 500);
+
   // ---- Require WebGL2 (Cesium shaders use WebGL2 features like 'flat') ----
   try{
     if (!viewer.scene.context.webgl2){
@@ -126,6 +179,10 @@ Promise.all([
   }catch(_){}
 
   try{ const fxaa = viewer.scene.postProcessStages.fxaa; if (fxaa) fxaa.enabled = !IS_MOBILE; }catch(e){}
+
+  // Disable Cesium's default picked-entity double-click zoom. HomeView controls all camera targets explicitly.
+  try{ viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK); }catch(_){ }
+  try{ viewer.screenSpaceEventHandler && viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK); }catch(_){ }
 
   // current view mode (needed for FOV slider)
   let currentMode = 'exterior';
@@ -572,10 +629,20 @@ function parseFutureProjects(raw){
   }
   collapseBtn.onclick=()=>setCollapsed(!collapsed);
 
+  const buildingSelectTitle = document.createElement('div');
+  buildingSelectTitle.className = 'hv-section-title';
+  buildingSelectTitle.textContent = 'Building';
+  panelBody.appendChild(buildingSelectTitle);
+
   const selectBox = document.createElement('select');
   selectBox.className = 'ui-select';
   selectBox.style.cssText="width:100%;padding:8px;border-radius:8px";
   panelBody.appendChild(selectBox);
+
+  const viewSelectTitle = document.createElement('div');
+  viewSelectTitle.className = 'hv-section-title';
+  viewSelectTitle.textContent = 'View / Unit';
+  panelBody.appendChild(viewSelectTitle);
 
   const viewSelect = document.createElement('select');
   viewSelect.className = 'ui-select';
@@ -649,6 +716,11 @@ function parseFutureProjects(raw){
   const finishStatus = finishCard.querySelector('#finishStatus');
   const floorFinishSelect = finishCard.querySelector('#floorFinishSelect');
   const cabinetFinishSelect = finishCard.querySelector('#cabinetFinishSelect');
+
+  const nearbyPlacesTitle = document.createElement('div');
+  nearbyPlacesTitle.className = 'hv-section-title';
+  nearbyPlacesTitle.textContent = 'Nearby Places';
+  panelBody.appendChild(nearbyPlacesTitle);
 
   const filterRow = document.createElement('div');
   filterRow.style.cssText="display:flex;flex-wrap:wrap;gap:6px";
@@ -935,9 +1007,26 @@ async function refreshFutureProjects(bIdx){
   futureProjectEntitiesByBuilding[bIdx] = ents;
 }
 
+  const priceChartCard = document.createElement('div');
+  priceChartCard.className = 'ui-card';
+  priceChartCard.style.cssText = 'border-radius:12px;padding:10px;display:none;overflow:hidden;';
+  const priceChartTitle = document.createElement('div');
+  priceChartTitle.className = 'hv-section-title';
+  priceChartTitle.textContent = 'Price Forecast';
+  priceChartTitle.style.cssText = 'font-weight:700;font-size:16px;margin-bottom:8px;display:block;';
+  priceChartCard.appendChild(priceChartTitle);
+
   const priceCanvas = document.createElement('canvas');
   priceCanvas.width = 310; priceCanvas.height=140;
-  panelBody.appendChild(priceCanvas);
+  priceCanvas.style.cssText = 'display:block;width:100%;max-width:310px;height:140px;';
+  priceChartCard.appendChild(priceCanvas);
+  panelBody.appendChild(priceChartCard);
+  function setPriceChartVisible(flag){
+    const show = !!flag;
+    priceChartCard.style.display = show ? 'block' : 'none';
+    priceCanvas.style.display = show ? 'block' : 'none';
+  }
+  setPriceChartVisible(false);
 
   // ===== Mortgage card =====
   const loanCard = document.createElement('div');
@@ -952,14 +1041,12 @@ async function refreshFutureProjects(bIdx){
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
         <label style="display:flex;flex-direction:column;font-size:13px;">Unit price ($)<input id="loanPrice" class="ui-input" type="number" min="0" step="1000" style="padding:8px;border-radius:8px"></label>
         <label style="display:flex;flex-direction:column;font-size:13px;">Down payment (%)<input id="loanDPct" class="ui-input" type="number" min="0" max="90" value="20" step="1" style="padding:8px;border-radius:8px"></label>
-        <label style="display:flex;flex-direction:column;font-size:13px;">Interest rate (% APR)<input id="loanRate" class="ui-input" type="number" min="0" max="50" value="6" step="0.1" style="padding:8px;border-radius:8px"></label>
+        <label style="display:flex;flex-direction:column;font-size:13px;">Interest rate (% APR)<input id="loanRate" class="ui-input" type="number" min="0" max="50" value="3.6" step="0.1" style="padding:8px;border-radius:8px"></label>
         <label style="display:flex;flex-direction:column;font-size:13px;">Term (years)
           <select id="loanTerm" class="ui-select" style="padding:8px;border-radius:8px">
-            <option>5</option><option>10</option><option>15</option><option>20</option><option>25</option><option>30</option>
+            <option>5</option><option>10</option><option>15</option><option>20</option><option selected>25</option><option>30</option>
           </select>
         </label>
-        <label style="display:flex;flex-direction:column;font-size:13px;">Max DTI (%)<input id="loanDTI" class="ui-input" type="number" min="10" max="60" value="35" step="1" style="padding:8px;border-radius:8px"></label>
-        <div></div>
       </div>
       <div id="loanOut" style="font-size:13px;line-height:1.7"></div>
     </div>`;
@@ -970,8 +1057,8 @@ async function refreshFutureProjects(bIdx){
   const loanDPct=loanCard.querySelector('#loanDPct');
   const loanRate=loanCard.querySelector('#loanRate');
   const loanTerm=loanCard.querySelector('#loanTerm');
-  const loanDTI =loanCard.querySelector('#loanDTI');
   const loanOut =loanCard.querySelector('#loanOut');
+  try{ loanRate.value = String(DEFAULT_MORTGAGE_RATE_APR); loanTerm.value = String(DEFAULT_MORTGAGE_TERM_YEARS); }catch(_){ }
   let refreshCompareButtons = function(){};
   function setLoanOpen(o){ loanBody.style.display=o?'flex':'none'; loanToggle.textContent=o?'Close':'Open'; }
   setLoanOpen(false);
@@ -980,15 +1067,13 @@ async function refreshFutureProjects(bIdx){
     const P = Math.max(0, Number(loanPrice.value||0));
     const dp = Math.min(90, Math.max(0, Number(loanDPct.value||0)));
     const principal = Math.max(0, P - P*dp/100);
-    const rate = Math.max(0, Number(loanRate.value||0))/100;
-    const termY = Math.max(1, Number(loanTerm.value||20));
+    const rate = Math.max(0, Number(loanRate.value || DEFAULT_MORTGAGE_RATE_APR))/100;
+    const termY = Math.max(1, Number(loanTerm.value || DEFAULT_MORTGAGE_TERM_YEARS));
     const m = -pmt(rate/12, termY*12, principal);
-    const dtiMax = Math.max(10, Number(loanDTI.value||35))/100;
-    const reqIncome = principal>0 ? (m*12)/dtiMax : 0;
-    loanOut.innerHTML = `Loan amount: <b>${fmtUSD(principal)}</b><br>Monthly payment: <b>${fmtUSD(m)}</b><br>Min annual income (DTI ${Math.round(dtiMax*100)}%): <b>${fmtUSD(reqIncome)}</b>`;
+    loanOut.innerHTML = `Loan amount: <b>${fmtUSD(principal)}</b><br>Estimated monthly payment: <b>${fmtUSD(m)}</b>`;
     return {rate, termY, dpct:dp};
   }
-  ;[loanPrice,loanDPct,loanRate,loanTerm,loanDTI].forEach(el=>el.addEventListener('input', ()=>{ recalcLoan(); refreshCompareButtons(); }));
+  ;[loanPrice,loanDPct,loanRate,loanTerm].forEach(el=>el.addEventListener('input', ()=>{ recalcLoan(); refreshCompareButtons(); }));
   loanToggle.onclick=()=>setLoanOpen(loanBody.style.display==='none');
 
   // ===== Tooltip for POIs =====
@@ -1269,10 +1354,10 @@ async function refreshFutureProjects(bIdx){
   btnDn.addEventListener('mousedown', ()=>{ dnHeld=true;  refreshJoyZ(); });
   btnDn.addEventListener('mouseup',   ()=>{ dnHeld=false; refreshJoyZ(); });
   function setJoystickVisible(v){
-    if (!IS_MOBILE){ joy.style.display = 'none'; vzWrap.style.display='none'; return; }
-    joy.style.display = v ? 'flex' : 'none';
-    vzWrap.style.display = v ? 'flex' : 'none';
-    if(!v){ resetJoy(); upHeld = dnHeld = false; refreshJoyZ(); }
+    const show = !!v && !!cameraJoystickEnabledByUser;
+    joy.style.display = show ? 'flex' : 'none';
+    vzWrap.style.display = show ? 'flex' : 'none';
+    if(!show){ resetJoy(); upHeld = dnHeld = false; refreshJoyZ(); }
   }
   setJoystickVisible(false);
 
@@ -1324,7 +1409,7 @@ async function refreshFutureProjects(bIdx){
   const gfxCard = document.createElement('div');
   gfxCard.className='ui-card';
   gfxCard.style.cssText = `position:fixed; right:16px; bottom:68px; width:220px; max-width:92vw; border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.18); z-index:2200; padding:12px; font-family:sans-serif; font-size:14px; display:none;`;
-  gfxCard.innerHTML = `<div style="font-weight:700; font-size:14px; margin-bottom:8px;">Graphics</div><label style="display:block; font-size:13px; margin-bottom:6px;">Preset</label>`;
+  gfxCard.innerHTML = `<div style="font-weight:700; font-size:14px; margin-bottom:8px;">Graphics</div><label style="display:block; font-size:13px; margin-bottom:6px;">Graphic Quality</label>`;
   document.body.appendChild(gfxCard);
   const presetSelect = document.createElement('select');
   presetSelect.className='ui-select';
@@ -1332,10 +1417,17 @@ async function refreshFutureProjects(bIdx){
   ['low','balanced','high'].forEach(v=>{ const o=document.createElement('option'); o.value=v; o.textContent = v.charAt(0).toUpperCase()+v.slice(1); presetSelect.appendChild(o); });
   gfxCard.appendChild(presetSelect);
 
-  const fovWrap = document.createElement('div');
-  fovWrap.style.cssText = "margin-top:10px;";
-  fovWrap.innerHTML = `<label style="display:block; font-size:13px; margin:6px 0 6px;">FOV (Interior): <span id="fovVal"></span>°</label><input id="fovRange" class="ui-input" type="range" min="50" max="100" step="1" style="width:100%;">`;
-  gfxCard.appendChild(fovWrap);
+  // 3D model quality control removed: Cesium applies rendering quality globally, so HomeView now exposes one Graphic Quality control only.
+
+  const displayOptionsWrap = document.createElement('div');
+  displayOptionsWrap.style.cssText = 'margin-top:12px;padding-top:10px;border-top:1px solid rgba(0,0,0,.08);display:flex;flex-direction:column;gap:8px;font-size:13px;';
+  displayOptionsWrap.innerHTML = `
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showJoystickToggle" type="checkbox"> Show camera joystick</label>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showMinimapToggle" type="checkbox" checked> Show minimap</label>`;
+  gfxCard.appendChild(displayOptionsWrap);
+  const showJoystickToggle = displayOptionsWrap.querySelector('#showJoystickToggle');
+  const showMinimapToggle = displayOptionsWrap.querySelector('#showMinimapToggle');
+  showJoystickToggle.checked = cameraJoystickEnabledByUser;
   const editorAuthWrap = document.createElement('div');
   editorAuthWrap.style.cssText = "margin-top:12px;padding-top:12px;border-top:1px solid rgba(0,0,0,.08);display:flex;flex-direction:column;gap:8px";
   editorAuthWrap.innerHTML = `
@@ -1364,23 +1456,24 @@ async function refreshFutureProjects(bIdx){
   openAnalyticsBtn.style.cssText = 'width:100%;display:none;';
   editorAuthWrap.appendChild(openAnalyticsBtn);
 
-  const fovValEl = fovWrap.querySelector('#fovVal');
-  const fovRange = fovWrap.querySelector('#fovRange');
-  const savedFov = Number(localStorage.getItem('ui.fovInterior') || 80);
-  fovRange.value = String(Math.min(100, Math.max(50, savedFov)));
-  fovValEl.textContent = fovRange.value;
   function deg2rad(d){ return d * Math.PI / 180; }
-  function setInteriorFovDeg(d, persist){
-    const deg = Math.min(100, Math.max(50, Number(d)||80));
-    if (persist) localStorage.setItem('ui.fovInterior', String(deg));
-    if (currentMode==='interior') {
-      const fr = viewer.camera.frustum; if (fr && 'fov' in fr) fr.fov = deg2rad(deg);
-    }
-    fovValEl.textContent = deg;
+  function applyFixedInteriorFov(){
+    const fr = viewer.camera.frustum;
+    if(fr && 'fov' in fr) fr.fov = deg2rad(DEFAULT_INTERIOR_FOV_DEG);
   }
-  fovRange.addEventListener('input', ()=> setInteriorFovDeg(fovRange.value, false));
-  fovRange.addEventListener('change', ()=> setInteriorFovDeg(fovRange.value, true));
   gfxBtn.addEventListener('click', ()=>{ gfxCard.style.display = (gfxCard.style.display === 'none' || !gfxCard.style.display) ? 'block' : 'none'; });
+  showJoystickToggle.addEventListener('change', function(){
+    cameraJoystickEnabledByUser = !!showJoystickToggle.checked;
+    setJoystickVisible(currentMode === 'interior');
+  });
+  showMinimapToggle.addEventListener('change', function(){
+    minimapEnabledByUser = !!showMinimapToggle.checked;
+    try{
+      const miniRoot = document.getElementById('miniTopRight');
+      if(typeof mini !== 'undefined' && mini) { if(minimapEnabledByUser) mini.show(); else mini.hide(); }
+      if(miniRoot) miniRoot.style.display = minimapEnabledByUser ? 'block' : 'none';
+    }catch(_){ }
+  });
 
   function updateEditorAuthUI(){
     const auth = getEditorAuthState();
@@ -1707,7 +1800,7 @@ async function refreshFutureProjects(bIdx){
     } else if (preset === 'high'){ viewer.resolutionScale = Math.min(1.25, DPR); if (fxaaStage) fxaaStage.enabled = true; if ('msaaSamples' in viewer.scene) viewer.scene.msaaSamples = 4; desiredMSE=8;  if(GOOGLE_3D_TILES) GOOGLE_3D_TILES.maximumScreenSpaceError=desiredMSE;
     } else { viewer.resolutionScale = 1.0; if (fxaaStage) fxaaStage.enabled = true; if ('msaaSamples' in viewer.scene) viewer.scene.msaaSamples = 2; desiredMSE=12; if(GOOGLE_3D_TILES) GOOGLE_3D_TILES.maximumScreenSpaceError=desiredMSE; }
   }
-  let initialPreset = 'balanced';
+  let initialPreset = IS_MOBILE ? 'low' : 'balanced';
   const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
   try{ if (conn?.saveData) initialPreset = 'low'; else if (conn?.effectiveType && /(^|-)2g|(^|-)slow-2g|(^|-)3g/.test(conn.effectiveType)) initialPreset = 'low'; }catch(e){}
   applyGfxPreset(initialPreset);
@@ -2057,14 +2150,18 @@ async function refreshFutureProjects(bIdx){
         return '';
       }
     }
-    function stylePoiChip(btn, hidden){
-      btn.style.opacity = hidden ? "0.6" : "1";
-      btn.style.background = hidden ? "#fff" : "#eef2ff";
+    function stylePoiChip(btn, hidden, type){
+      const st = getAmenityStyle(type || (btn && btn.dataset && btn.dataset.poiType) || '');
+      btn.style.opacity = hidden ? "0.55" : "1";
+      btn.style.textDecoration = hidden ? "line-through" : "none";
+      btn.style.borderColor = st.color;
+      btn.style.background = hidden ? "#fff" : st.color;
+      btn.style.color = hidden ? st.color : "#fff";
     }
     function syncFutureProjectsChip(){
       if(showFutureProjectsToggle) showFutureProjectsToggle.checked = !!(futureProjectsChipBtn && futureProjectsChipBtn.dataset.enabled === '1');
       if(!futureProjectsChipBtn) return;
-      stylePoiChip(futureProjectsChipBtn, futureProjectsChipBtn.dataset.enabled !== '1');
+      stylePoiChip(futureProjectsChipBtn, futureProjectsChipBtn.dataset.enabled !== '1', 'future projects');
     }
     function applyPoiTypeFilters(idx){
       const activeIdx = Number.isFinite(Number(idx)) ? Number(idx) : Number(selectBox && selectBox.value || 0);
@@ -2085,8 +2182,9 @@ async function refreshFutureProjects(bIdx){
 
       if(hasFutureProjectsByBuilding[idx]){
         futureProjectsChipBtn = document.createElement('button');
-        futureProjectsChipBtn.className='ui-btn';
-        futureProjectsChipBtn.textContent='Future projects';
+        futureProjectsChipBtn.className='ui-btn hv-filter-chip';
+        futureProjectsChipBtn.textContent=getAmenityIcon('future projects') + ' ' + getAmenityDisplayLabel('future projects');
+        futureProjectsChipBtn.dataset.poiType = 'future projects';
         futureProjectsChipBtn.dataset.enabled = (showFutureProjectsToggle && showFutureProjectsToggle.checked) ? '1' : '0';
         futureProjectsChipBtn.style.cssText="padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px";
         futureProjectsChipBtn.onclick = async ()=>{
@@ -2120,14 +2218,16 @@ async function refreshFutureProjects(bIdx){
 
       types.forEach(tn=>{
         const btn=document.createElement('button');
-        btn.className='ui-btn';
-        btn.textContent=tn;
+        const st = getAmenityStyle(tn);
+        btn.className='ui-btn hv-filter-chip';
+        btn.dataset.poiType = tn;
+        btn.textContent=st.icon + ' ' + st.label;
         btn.style.cssText="padding:6px 10px;border-radius:999px;cursor:pointer;font-size:12px";
-        stylePoiChip(btn, hiddenPoiTypes.has(tn));
+        stylePoiChip(btn, hiddenPoiTypes.has(tn), tn);
         btn.onclick=()=>{
           if(hiddenPoiTypes.has(tn)) hiddenPoiTypes.delete(tn);
           else hiddenPoiTypes.add(tn);
-          stylePoiChip(btn, hiddenPoiTypes.has(tn));
+          stylePoiChip(btn, hiddenPoiTypes.has(tn), tn);
           applyPoiTypeFilters(Number(selectBox.value));
           mini.refreshCity(Number(selectBox.value));
           updateCommute(Number(selectBox.value));
@@ -2138,8 +2238,8 @@ async function refreshFutureProjects(bIdx){
 
     // POI sources
     const poiSources=[]; const poiIndexById=new Map(); const pinBuilder=new Cesium.PinBuilder();
-    function colorForType(type){ const t=(type||'').toLowerCase(); if(t.includes('super'))return Cesium.Color.fromCssColorString('#2e7d32'); if(t.includes('school')||t.includes('univ'))return Cesium.Color.fromCssColorString('#1565c0'); if(t.includes('hosp')||t.includes('clinic'))return Cesium.Color.fromCssColorString('#c62828'); if(t.includes('park'))return Cesium.Color.fromCssColorString('#2e7d32').withAlpha(0.85); if(t.includes('transit')||t.includes('station')||t.includes('bus'))return Cesium.Color.fromCssColorString('#6d4c41'); if(t.includes('gym')||t.includes('fitness'))return Cesium.Color.fromCssColorString('#8e24aa'); if(t.includes('cafe')||t.includes('coffee'))return Cesium.Color.fromCssColorString('#5d4037'); return Cesium.Color.fromCssColorString('#455a64'); }
-    function poiBillboard(type,icon){ const col=colorForType(type); const img = icon? pinBuilder.fromText(icon,col,42).toDataURL() : pinBuilder.fromColor(col,32).toDataURL(); return { image:img, verticalOrigin:Cesium.VerticalOrigin.BOTTOM, scale:1, disableDepthTestDistance:Number.POSITIVE_INFINITY }; }
+    function colorForType(type){ return Cesium.Color.fromCssColorString(getAmenityStyle(type).color); }
+    function poiBillboard(type,icon){ const col=colorForType(type); const txt = (icon || getAmenityIcon(type) || '').trim(); const img = txt ? pinBuilder.fromText(txt,col,42).toDataURL() : pinBuilder.fromColor(col,32).toDataURL(); return { image:img, verticalOrigin:Cesium.VerticalOrigin.BOTTOM, scale:1, disableDepthTestDistance:Number.POSITIVE_INFINITY }; }
     function metersBetween(a,b){ const g=new Cesium.EllipsoidGeodesic(a,b); return g.surfaceDistance; }
     function getPoiRadiusMeters(buildingRow, poiRow, fallback){
       const poiRadius = toNum(firstFilled(
@@ -2167,6 +2267,133 @@ async function refreshFutureProjects(bIdx){
       return 'walk ' + walk + ' • drive ' + drive;
     }
 
+    function shortenPoiLine(text, maxLen){
+      const s = String(text || '').replace(/\s+/g, ' ').trim();
+      const limit = Number(maxLen) || 28;
+      if(s.length <= limit) return s;
+      return s.slice(0, Math.max(0, limit - 1)).trim() + '…';
+    }
+
+    function cleanPoiNameForLabel(rawName, rawType){
+      let name = String(rawName || '').replace(/\s+/g, ' ').trim();
+      if(!name) return '';
+
+      const typeLabel = getAmenityDisplayLabel(rawType);
+      const typeRx = new RegExp('^' + String(typeLabel || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\s*[:\-–—]?\s*', 'i');
+      name = name.replace(typeRx, '').trim();
+
+      // Transit stop names often arrive as directions or street-crossing addresses.
+      // These are noisy in the 3D label, so keep the category and travel time only.
+      const lower = name.toLowerCase();
+      const hasStreetToken = /\b(rd|road|st|street|ave|avenue|hwy|highway|blvd|boulevard|dr|drive|way|overpass|cres|lane|ln|pl|place|w\s*\d+|e\s*\d+|n\s*\d+|s\s*\d+)\b/i.test(name);
+      const looksLikeTransitAddress = /\s@\s/.test(name) || /^(inbound|outbound|northbound|southbound|eastbound|westbound)\b/i.test(name);
+      const looksLikeCivicAddress = /\d+\s+[^,]+\b(rd|road|st|street|ave|avenue|hwy|highway|blvd|boulevard|dr|drive|way)\b/i.test(name);
+      if((looksLikeTransitAddress && hasStreetToken) || looksLikeCivicAddress) return '';
+
+      if(lower === String(typeLabel || '').toLowerCase()) return '';
+      return shortenPoiLine(name, 30);
+    }
+
+    function getPoiLabelLines(poi, type, distMeters){
+      const st = getAmenityStyle(type);
+      const cleanName = cleanPoiNameForLabel(poi && poi.name, type);
+      const lines = [{ text: st.label, role: 'type' }];
+      if(cleanName) lines.push({ text: cleanName, role: 'name' });
+      lines.push({ text: formatPoiTravelLine(distMeters), role: 'travel' });
+      return lines;
+    }
+
+    function makePoiLabelBillboardImage(poi, type, distMeters){
+      const st = getAmenityStyle(type);
+      const color = st.color || '#455a64';
+      const bg = st.bg || '#edf2f4';
+      const icon = (st.icon || '').trim();
+      const lines = getPoiLabelLines(poi, type, distMeters);
+
+      const scale = Math.max(2, Math.min(3, Math.round(window.devicePixelRatio || 2)));
+      const measure = document.createElement('canvas');
+      const mctx = measure.getContext('2d');
+      mctx.font = '700 14px system-ui, -apple-system, Segoe UI, Arial, sans-serif';
+
+      const maxTextWidth = 210;
+      const wrapped = [];
+      function pushWrapped(line){
+        const text = String(line.text || '').replace(/\s+/g, ' ').trim();
+        if(!text) return;
+        const words = text.split(' ');
+        let cur = '';
+        words.forEach(function(w){
+          const trial = cur ? (cur + ' ' + w) : w;
+          if(mctx.measureText(trial).width > maxTextWidth && cur){
+            wrapped.push({ text: cur, role: line.role });
+            cur = w;
+          }else{
+            cur = trial;
+          }
+        });
+        if(cur) wrapped.push({ text: cur, role: line.role });
+      }
+      lines.forEach(pushWrapped);
+
+      const padX = 12, padY = 8, radius = 10;
+      const iconSize = icon ? 16 : 0;
+      const gap = icon ? 6 : 0;
+      const lineH = 17;
+      let textW = 0;
+      wrapped.forEach(function(l){ textW = Math.max(textW, mctx.measureText(l.text).width); });
+      const w = Math.ceil(Math.min(260, Math.max(112, padX*2 + iconSize + gap + textW)));
+      const h = Math.ceil(padY*2 + wrapped.length * lineH);
+
+      const c = document.createElement('canvas');
+      c.width = Math.ceil(w * scale);
+      c.height = Math.ceil(h * scale);
+      c.style.width = w + 'px';
+      c.style.height = h + 'px';
+      const ctx = c.getContext('2d');
+      ctx.scale(scale, scale);
+      ctx.clearRect(0,0,w,h);
+
+      ctx.shadowColor = 'rgba(0,0,0,.18)';
+      ctx.shadowBlur = 5;
+      ctx.shadowOffsetY = 2;
+      ctx.fillStyle = bg;
+      ctx.strokeStyle = 'rgba(255,255,255,.95)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(radius, 0);
+      ctx.lineTo(w-radius, 0);
+      ctx.quadraticCurveTo(w, 0, w, radius);
+      ctx.lineTo(w, h-radius);
+      ctx.quadraticCurveTo(w, h, w-radius, h);
+      ctx.lineTo(radius, h);
+      ctx.quadraticCurveTo(0, h, 0, h-radius);
+      ctx.lineTo(0, radius);
+      ctx.quadraticCurveTo(0, 0, radius, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowColor = 'transparent';
+      ctx.stroke();
+
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      const contentW = w - padX*2;
+      const textX = padX + iconSize + gap + (contentW - iconSize - gap) / 2;
+      let y = padY + lineH/2;
+      if(icon){
+        ctx.font = '700 14px system-ui, -apple-system, Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji, sans-serif';
+        ctx.fillStyle = color;
+        ctx.fillText(icon, padX + iconSize/2, padY + lineH/2);
+      }
+      wrapped.forEach(function(l, idx){
+        ctx.font = (l.role === 'type' || l.role === 'name') ? '700 13px system-ui, -apple-system, Segoe UI, Arial, sans-serif' : '600 12px system-ui, -apple-system, Segoe UI, Arial, sans-serif';
+        ctx.fillStyle = color;
+        ctx.fillText(l.text, textX, y);
+        y += lineH;
+      });
+
+      return { image: c.toDataURL('image/png'), width: w, height: h, pixelRatio: scale };
+    }
+
     b.forEach((br,i)=>{
       const ds=new Cesium.CustomDataSource('pois-'+i);
       ds.clustering=new Cesium.EntityCluster({enabled:true,pixelRange:40,minimumClusterSize:3});
@@ -2186,8 +2413,17 @@ async function refreshFutureProjects(bIdx){
         const type=(poi.type||'').toLowerCase().trim();
         const ent=ds.entities.add({
           position: Cesium.Cartesian3.fromDegrees(plng,plat,0),
-          billboard: poiBillboard(type,(poi.icon||'').trim()),
-          label: { text: (poi.name||'') + '\n' + formatPoiTravelLine(dist), font:"14px sans-serif", fillColor:Cesium.Color.BLACK, outlineColor:Cesium.Color.WHITE, outlineWidth:3, style:Cesium.LabelStyle.FILL_AND_OUTLINE, verticalOrigin:Cesium.VerticalOrigin.TOP, horizontalOrigin: Cesium.HorizontalOrigin.CENTER, pixelOffset: new Cesium.Cartesian2(0, -42), showBackground:true, backgroundColor:Cesium.Color.fromCssColorString('#ffffff').withAlpha(0.75), disableDepthTestDistance:Number.POSITIVE_INFINITY },
+          billboard: (function(){
+            const lbl = makePoiLabelBillboardImage(poi, type, dist);
+            return {
+              image: lbl.image,
+              verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+              horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+              pixelOffset: new Cesium.Cartesian2(0, 0),
+              scale: Math.min(0.42, 0.84 / (lbl.pixelRatio || 2)),
+              disableDepthTestDistance: Number.POSITIVE_INFINITY
+            };
+          })(),
           properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:2 },
           show: i===0
         });
@@ -2353,6 +2589,19 @@ async function refreshFutureProjects(bIdx){
       if(interiorBlobFetchPromisesByBuilding[bIdx]) interiorBlobFetchPromisesByBuilding[bIdx][itemIdx] = null;
       if(!options.silent) requestSceneRenderBurst(4);
     }
+
+    reloadActiveInteriorForModelQuality = async function(){
+      try{
+        if(!activeInteriorSelection){ requestSceneRenderBurst(4); return; }
+        const sel = activeInteriorSelection;
+        destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: true, silent: true });
+        await ensureInteriorEntity(sel.bIdx, sel.itemIdx);
+        await updateView(sel.bIdx, { forceViewValue: (sel.kind || 'unit') + ':' + sel.itemIdx });
+      }catch(err){
+        console.warn('Model quality reload failed:', err);
+        requestSceneRenderBurst(4);
+      }
+    };
 
     function destroyNonActiveInteriorEntities(nextSelection){
       const keepB = nextSelection ? nextSelection.bIdx : -1;
@@ -3253,10 +3502,11 @@ function fmtMoneyNoDash(n){
         const year=getYearBuilt(ur);
         const monthly = Number.isFinite(price) ? -pmt((loan.rate||0)/12, (loan.termY||20)*12, price*(1-(loan.dpct||20)/100)) : NaN;
         const name=ur.unit_name||ur.name||('Unit '+(uIdx+1));
-        return {name,price,area,beds,baths,parking,fee,year,monthly};
+        const buildingName = firstFilled(br && br.name, br && br.title, br && br.building_name, 'Building');
+        return {name,buildingName,price,area,beds,baths,parking,fee,year,monthly};
       });
       const head='<tr style="font-weight:700"><td></td><td>Price</td><td>Area</td><td>Beds</td><td>Baths</td><td>Parking</td><td>Fee</td><td>Year</td><td>Monthly</td></tr>';
-      const trs=rows.map(r=>`<tr><td style="font-weight:600">${r.name}</td><td>${fmtUSD(r.price)}</td><td>${Number.isFinite(r.area)?fmtAreaSqftValue(r.area,1):'—'}</td><td>${r.beds!=null?r.beds:'—'}</td><td>${r.baths!=null?r.baths:'—'}</td><td>${r.parking!=null?r.parking:'—'}</td><td>${fmtMoneyNoDash(r.fee)||'—'}</td><td>${r.year!=null?r.year:'—'}</td><td>${fmtUSD(r.monthly)}</td></tr>`).join('');
+      const trs=rows.map(r=>`<tr><td><div style="font-weight:700">${r.name}</div><div style="font-size:12px;opacity:.68">${r.buildingName || ''}</div></td><td>${fmtUSD(r.price)}</td><td>${Number.isFinite(r.area)?fmtAreaSqftValue(r.area,1):'—'}</td><td>${r.beds!=null?r.beds:'—'}</td><td>${r.baths!=null?r.baths:'—'}</td><td>${r.parking!=null?r.parking:'—'}</td><td>${fmtMoneyNoDash(r.fee)||'—'}</td><td>${r.year!=null?r.year:'—'}</td><td>${fmtUSD(r.monthly)}</td></tr>`).join('');
       box.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <div style="font-weight:700">Compare Units</div>
@@ -3336,44 +3586,9 @@ function fmtMoneyNoDash(n){
       commuteCard.style.display = 'none';
     }
 
-    // ===== Price Insights (current) =====
-    const priceCard=document.createElement('div');
-    priceCard.className='ui-card';
-    priceCard.style.cssText="border-radius:12px;padding:10px;display:none";
-    priceCard.innerHTML='<div style="font-weight:700;margin-bottom:6px">Price Insights</div><div id="priceBody" style="display:flex;flex-direction:column;gap:6px"></div>';
-    panelBody.appendChild(priceCard);
-    const priceBody=priceCard.querySelector('#priceBody');
-
-    function priceDeltas(bIdx,uIdx){
-      const br=b[bIdx];
-      const unit=(interiorMetaByBuilding[bIdx]||[])[uIdx]||{};
-      const priceU=getCurrentPrice(unit,br);
-      if(!Number.isFinite(priceU)) return null;
-
-      // avg building
-      const units=(interiorMetaByBuilding[bIdx]||[]);
-      let s=0,c=0; units.forEach(u=>{ const v=getCurrentPrice(u,br); if(Number.isFinite(v)){ s+=v; c++; }});
-      const avgB = c? s/c : parseFirstNumber(br.estimated_price_first||br.estimated_price);
-
-      // avg area (1km)
-      const here=Cesium.Cartographic.fromDegrees(toNum(br.lng),toNum(br.lat));
-      let sa=0, ca=0;
-      b.forEach(o=>{
-        const d=metersBetween(here, Cesium.Cartographic.fromDegrees(toNum(o.lng),toNum(o.lat)));
-        if(d<=1000){ const pv=parseFirstNumber(o.estimated_price_first||o.estimated_price); if(Number.isFinite(pv)){ sa+=pv; ca++; } }
-      });
-      const avgArea = ca? sa/ca : NaN;
-
-      const dB = Number.isFinite(avgB)? ((priceU-avgB)/avgB)*100 : NaN;
-      const dA = Number.isFinite(avgArea)? ((priceU-avgArea)/avgArea)*100 : NaN;
-      return {priceU,dB,dA};
-    }
-    function renderInsights(bIdx,uIdx){
-      const d=priceDeltas(bIdx,uIdx); if(!d){ priceCard.style.display='none'; return; }
-      function line(lbl,p){ if(!Number.isFinite(p)) return ''; const tag=p<=0?'better':'worse'; return `<div style="display:flex;justify-content:space-between;font-size:13px"><span>${lbl}</span><span>${(p>0?'+':'')+p.toFixed(1)}% • ${tag}</span></div>`; }
-      priceBody.innerHTML = `<div style="display:flex;justify-content:space-between;font-size:13px"><span>Price</span><b>${fmtUSD(d.priceU)}</b></div>${line('vs building avg',d.dB)}${line('vs area avg (1km)',d.dA)}`;
-      priceCard.style.display='block';
-    }
+    // ===== Price Insights removed intentionally =====
+    const priceCard = { style: { display: 'none' } };
+    function renderInsights(){ /* Removed: incomplete area/building averages can mislead users. */ }
 
     // ===== Mini (city/plan) + floating AI advisor =====
     const mini=(function(){
@@ -3567,7 +3782,7 @@ function fmtMoneyNoDash(n){
 
       return {
         root,
-        show(){ root.style.display='block'; },
+        show(){ root.style.display = minimapEnabledByUser ? 'block' : 'none'; },
         hide(){ root.style.display='none'; },
         setMode,
         setPane(pane){ if(pane === 'ai'){ setAiAdvisorOpen(true); return; } setMode(pane === 'plan' ? 'plan' : 'city'); },
@@ -3587,8 +3802,9 @@ function fmtMoneyNoDash(n){
             if(dist>poiRadius) return;
             const type=(poi.type||'').toLowerCase().trim();
             if(hiddenPoiTypes.has(type)) return;
-            const m=L.circleMarker([plat,plng],{radius:3,color:'#455a64',weight:1,fillColor:'#455a64',fillOpacity:0.9});
-            if(poi.name) m.bindTooltip(poi.name,{direction:'top',offset:[0,-2]});
+            const mStyle = getAmenityStyle(type);
+            const m=L.circleMarker([plat,plng],{radius:4,color:mStyle.color,weight:1,fillColor:mStyle.color,fillOpacity:0.9});
+            if(poi.name) m.bindTooltip(mStyle.icon + ' ' + mStyle.label + '<br>' + poi.name,{direction:'top',offset:[0,-2]});
             m.addTo(layerPois);
           });
           setMode(currentMiniMode);
@@ -4385,14 +4601,17 @@ adminApplyBtn.onclick = function(){
         return;
       }
       if(await handleInteractiveLabelActionFromPick(picked)){ tip.style.display='none'; return; }
-      if(!picked || !picked.id || !poiIndexById.has(picked.id.id)){ tip.style.display='none'; return; }
-      const ent=picked.id, props=ent.properties||{};
-      const nm = props.name&&props.name.getValue ? props.name.getValue() : (ent.name||'');
-      const tp = props.type&&props.type.getValue ? props.type.getValue() : '';
-      const url= props.url &&props.url.getValue ? props.url.getValue() : '';
-      const dist=props.distance_m&&props.distance_m.getValue ? props.distance_m.getValue() : '';
-      tip.innerHTML = `<div style="font-weight:600;margin-bottom:4px">${nm}</div><div style="opacity:.85;margin-bottom:4px">${tp}${dist?` • ${dist} m`:''}</div>${url?`<a href="${url}" target="_blank" style="color:#1976d2;text-decoration:none">Open link</a>`:''}`;
-      tip.style.left=m.position.x+'px'; tip.style.top=m.position.y+'px'; tip.style.display='block';
+      if(picked && picked.id && poiIndexById.has(picked.id.id)){
+        // POI / amenity labels are informational only. They must never become
+        // the selected/tracked entity or change the Building View camera target.
+        try{ viewer.selectedEntity = undefined; }catch(_){ }
+        try{ viewer.trackedEntity = undefined; }catch(_){ }
+        try{ stopCameraTracking(); }catch(_){ }
+        tip.style.display='none';
+        requestSceneRenderBurst(2);
+        return;
+      }
+      tip.style.display='none';
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
     viewer.camera.changed.addEventListener(()=>{ tip.style.display='none'; });
 
@@ -4570,7 +4789,7 @@ function hideUnitMetaUI(){
         descBox.textContent = 'The model did not finish loading. Please try this unit again.';
         hideUnitMetaUI();
         hideFinishCard();
-        priceCanvas.style.display='none';
+        setPriceChartVisible(false);
         loanCard.style.display='none';
         compareCard.style.display='none';
         similarCard.style.display='none';
@@ -4636,7 +4855,7 @@ function hideUnitMetaUI(){
           adminBuildingViewsCard.style.display = 'none';
         }
 
-        priceCanvas.style.display='none';
+        setPriceChartVisible(false);
         loanCard.style.display='none';
         compareCard.style.display='none';
         similarCard.style.display='none';
@@ -4679,11 +4898,7 @@ function hideUnitMetaUI(){
         clampCameraRollZero();
         updatePanoramaLabelUiHints();
 
-        const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
-        const fr=viewer.camera.frustum;
-        if(fr && 'fov' in fr) fr.fov = saved * Math.PI/180;
-        fovRange.value = String(saved);
-        fovValEl.textContent = saved;
+        applyFixedInteriorFov();
 
         title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
         renderUnitMetaUI(meta, row);
@@ -4702,10 +4917,10 @@ function hideUnitMetaUI(){
 
         const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
         if (chartSeries) {
-          priceCanvas.style.display='block';
+          setPriceChartVisible(true);
           drawPriceChart(priceCanvas, chartSeries);
         } else {
-          priceCanvas.style.display='none';
+          setPriceChartVisible(false);
         }
 
         const autoPrice=getCurrentPrice(meta,row);
@@ -4713,7 +4928,7 @@ function hideUnitMetaUI(){
         loanCard.style.display = hasComparablePrice ? 'block' : 'none';
         compareCard.style.display = hasComparablePrice ? 'block' : 'none';
         similarCard.style.display = hasComparablePrice ? 'block' : 'none';
-        priceCard.style.display = hasComparablePrice ? 'block' : 'none';
+        priceCard.style.display = 'none';
         commuteCard.style.display='none';
         if(hasComparablePrice){
           loanPrice.value = String(autoPrice);
@@ -4756,13 +4971,9 @@ function hideUnitMetaUI(){
         // Amenities should behave like interior navigation, not exterior orbit mode.
         setInteriorMouseBindings();
         interiorNav.enable();
-        setJoystickVisible(true);
+        setJoystickVisible(false);
 
-        const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
-        const fr=viewer.camera.frustum;
-        if(fr && 'fov' in fr) fr.fov = saved * Math.PI/180;
-        fovRange.value = String(saved);
-        fovValEl.textContent = saved;
+        applyFixedInteriorFov();
 
         title.textContent=(row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '');
         hideUnitMetaUI();
@@ -4774,7 +4985,7 @@ function hideUnitMetaUI(){
         adminBuildingViewsCard.style.display = 'none';
         hideUnitAdLogo();
 
-        priceCanvas.style.display='none';
+        setPriceChartVisible(false);
         loanCard.style.display='none';
         compareCard.style.display='none';
         similarCard.style.display='none';
@@ -4801,9 +5012,7 @@ function hideUnitMetaUI(){
           setCameraCollision(false);
           setInteriorMouseBindings(); interiorNav.enable(); setJoystickVisible(true);
 
-          const saved = Number(localStorage.getItem('ui.fovInterior'))||80;
-          const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov = saved * Math.PI/180;
-          fovRange.value = String(saved); fovValEl.textContent = saved;
+          applyFixedInteriorFov();
 
           title.textContent=(row.name||'') + (getItemDisplayName(meta) ? ' — '+getItemDisplayName(meta) : '');
           renderUnitMetaUI(meta, row);
@@ -4819,16 +5028,16 @@ function hideUnitMetaUI(){
 
           const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
           if (chartSeries) {
-            priceCanvas.style.display='block';
+            setPriceChartVisible(true);
             drawPriceChart(priceCanvas, chartSeries);
           } else {
-            priceCanvas.style.display='none';
+            setPriceChartVisible(false);
           }
 
           loanCard.style.display='block';
           compareCard.style.display='block';
           similarCard.style.display='block';
-          priceCard.style.display='block';
+          priceCard.style.display='none';
 
           const autoPrice=getCurrentPrice(meta,row);
           loanPrice.value = Number.isFinite(autoPrice) && autoPrice>0 ? String(autoPrice) : '';
@@ -4853,7 +5062,7 @@ function hideUnitMetaUI(){
           descBox.textContent = d;
           adminBuildingViewsCard.style.display = 'none';
           showUnitAdLogo(meta, row);
-          priceCanvas.style.display='none';
+          setPriceChartVisible(false);
           loanCard.style.display='none';
           compareCard.style.display='none';
           similarCard.style.display='none';
@@ -4942,8 +5151,10 @@ function hideUnitMetaUI(){
     const ori=Cesium.Transforms.headingPitchRollQuaternion(pos,hpr);
     const scale=toNum(uRow.scale)||8;
     const name=uRow.unit_name||uRow.name||'Unit';
-    const minPx = IS_MOBILE ? 48 : 96;
-    const maxScale = IS_MOBILE ? Math.min(scale, 6) : scale;
+    // Model quality is not exposed as a separate user setting because Cesium's rendering quality is effectively global.
+    // Keep imported 3D models consistent and let the Graphic Quality preset control the overall scene performance.
+    const minPx = IS_MOBILE ? 64 : 128;
+    const maxScale = scale;
 
     const anchorEntity = viewer.entities.add({
       name:name,
