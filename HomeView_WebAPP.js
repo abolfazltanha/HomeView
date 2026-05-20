@@ -611,6 +611,61 @@ function parseFutureProjects(raw){
   aiAdvisorBtn.style.cssText = 'height:32px;padding:0 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto';
   headerLeft.appendChild(aiAdvisorBtn);
 
+  const shareViewBtn = document.createElement('button');
+  shareViewBtn.type = 'button';
+  shareViewBtn.textContent = 'Share';
+  shareViewBtn.title = 'Copy a direct link to the current building or unit';
+  shareViewBtn.setAttribute('aria-label', 'Copy share link');
+  shareViewBtn.className = 'ui-btn';
+  shareViewBtn.style.cssText = 'height:32px;padding:0 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto';
+  headerLeft.appendChild(shareViewBtn);
+
+  const shareToast = document.createElement('div');
+  shareToast.className = 'ui-card';
+  shareToast.style.cssText = 'position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;z-index:900000;border-radius:999px;padding:10px 14px;font-size:13px;font-weight:700;box-shadow:0 10px 28px rgba(0,0,0,.20);transition:opacity .18s ease, transform .18s ease;';
+  shareToast.textContent = 'Link copied';
+  document.body.appendChild(shareToast);
+  let shareToastTimer = null;
+  function showShareToast(message){
+    shareToast.textContent = String(message || 'Link copied');
+    shareToast.style.opacity = '1';
+    shareToast.style.transform = 'translateX(-50%) translateY(0)';
+    if(shareToastTimer) clearTimeout(shareToastTimer);
+    shareToastTimer = setTimeout(function(){
+      shareToast.style.opacity = '0';
+      shareToast.style.transform = 'translateX(-50%) translateY(12px)';
+    }, 1800);
+  }
+  async function copyTextToClipboard(text){
+    const value = String(text || '');
+    if(!value) return false;
+    try{
+      if(navigator.clipboard && window.isSecureContext){
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    }catch(_){ }
+    try{
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      ta.setAttribute('readonly','');
+      ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return !!ok;
+    }catch(_){ return false; }
+  }
+  let buildCurrentShareUrl = function(){ return window.location.href; };
+  shareViewBtn.onclick = async function(){
+    const url = buildCurrentShareUrl();
+    const ok = await copyTextToClipboard(url);
+    showShareToast(ok ? 'Direct link copied' : 'Copy failed — link is ready in console');
+    if(!ok) console.log('HomeView share link:', url);
+  };
+
   let setAiAdvisorOpen = function(){};
 
   const headerLabelsWrap = null;
@@ -5258,6 +5313,7 @@ adminApplyBtn.onclick = function(){
   meta.labels_view_distance_m = distanceString;
 
   adminEditorStatus.textContent = 'Changes applied locally. Press Save changes to persist them.';
+  applyInitialShareLinkFromUrl();
   updateView(Number(selectBox.value));
 };
 
@@ -5365,6 +5421,103 @@ adminApplyBtn.onclick = function(){
         viewSelect.appendChild(o2);
       });
       viewSelect.value='exterior';
+    }
+
+    // ===== Direct share links =====
+    function hvShareCleanKey(value){
+      return String(value || '').trim().toLowerCase()
+        .replace(/[\u200b\u200c\u200d\ufeff]/g,'')
+        .replace(/[^a-z0-9]+/g,'_')
+        .replace(/^_+|_+$/g,'');
+    }
+    function getBuildingShareKey(row, idx){
+      return firstFilled(row && row.building_key, row && row.key, row && row.id, row && row.slug, row && row.name, String(idx));
+    }
+    function getItemShareKey(item, idx){
+      return firstFilled(item && item.unit_key, item && item.unit_id, item && item.key, item && item.id, item && item.unit_name, item && item.name, item && item.title, item && item.unit_number, String(idx));
+    }
+    function optionExists(value){
+      for(let i=0;i<viewSelect.options.length;i++){
+        if(viewSelect.options[i].value === value) return true;
+      }
+      return false;
+    }
+    function findBuildingIndexForShare(value, fallbackIndex){
+      if(Number.isFinite(Number(fallbackIndex)) && buildingsData[Number(fallbackIndex)]) return Number(fallbackIndex);
+      const raw = String(value || '').trim();
+      if(!raw) return 0;
+      if(Number.isFinite(Number(raw)) && buildingsData[Number(raw)]) return Number(raw);
+      const key = hvShareCleanKey(raw);
+      for(let i=0;i<buildingsData.length;i++){
+        const row = buildingsData[i] || {};
+        const candidates = [row.building_key, row.key, row.id, row.slug, row.name, String(i)];
+        if(candidates.some(function(v){ return hvShareCleanKey(v) === key; })) return i;
+      }
+      return 0;
+    }
+    function findViewValueForShare(bIdx, rawView, rawUnit){
+      const view = String(rawView || '').trim();
+      if(view && optionExists(view)) return view;
+      const unitRaw = String(rawUnit || '').trim();
+      if(!unitRaw) return 'exterior';
+      const list = interiorMetaByBuilding[bIdx] || [];
+      if(Number.isFinite(Number(unitRaw))){
+        const n = Number(unitRaw);
+        const values = ['unit:'+n, 'panorama:'+n, 'amenity:'+n];
+        for(const v of values){ if(optionExists(v)) return v; }
+      }
+      const key = hvShareCleanKey(unitRaw);
+      for(let k=0;k<list.length;k++){
+        const item = list[k] || {};
+        const panorama = isPanoramaRow(item);
+        const amenity = !panorama && isAmenityRow(item);
+        const prefix = panorama ? 'panorama:' : (amenity ? 'amenity:' : 'unit:');
+        const candidates = [item.unit_key, item.unit_id, item.key, item.id, item.unit_name, item.name, item.title, item.unit_number, String(k)];
+        if(candidates.some(function(v){ return hvShareCleanKey(v) === key; })) return prefix + k;
+      }
+      return 'exterior';
+    }
+    function getCurrentShareTarget(){
+      const bIdx = Number(selectBox && selectBox.value || 0);
+      const row = buildingsData[bIdx] || {};
+      const viewValue = String((viewSelect && viewSelect.value) || 'exterior');
+      const params = {
+        b: getBuildingShareKey(row, bIdx),
+        bi: String(bIdx),
+        v: viewValue
+      };
+      if(viewValue !== 'exterior'){
+        const parts = viewValue.split(':');
+        const itemIdx = Number(parts[1] || 0);
+        const item = (interiorMetaByBuilding[bIdx] || [])[itemIdx] || {};
+        params.u = getItemShareKey(item, itemIdx);
+      }
+      return params;
+    }
+    buildCurrentShareUrl = function(){
+      const url = new URL(window.location.href);
+      const target = getCurrentShareTarget();
+      url.searchParams.set('hv_b', target.b);
+      url.searchParams.set('hv_bi', target.bi);
+      url.searchParams.set('hv_v', target.v);
+      if(target.u) url.searchParams.set('hv_u', target.u);
+      else url.searchParams.delete('hv_u');
+      return url.toString();
+    };
+    function applyInitialShareLinkFromUrl(){
+      const sp = new URLSearchParams(window.location.search);
+      const hasTarget = sp.has('hv_b') || sp.has('hv_bi') || sp.has('hv_v') || sp.has('hv_u') || sp.has('building') || sp.has('unit') || sp.has('view');
+      if(!hasTarget) return false;
+      const bIdx = findBuildingIndexForShare(sp.get('hv_b') || sp.get('building') || sp.get('b'), sp.get('hv_bi'));
+      if(selectBox) selectBox.value = String(bIdx);
+      hiddenPoiTypes = new Set();
+      rebuildChipsForBuilding(bIdx);
+      rebuildViewOptions(bIdx);
+      const viewValue = findViewValueForShare(bIdx, sp.get('hv_v') || sp.get('view'), sp.get('hv_u') || sp.get('unit') || sp.get('u'));
+      if(viewSelect) viewSelect.value = viewValue;
+      applyPoiTypeFilters(bIdx);
+      syncFutureProjectsChip();
+      return true;
     }
 
     // ===== Update View =====
