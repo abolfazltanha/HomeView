@@ -43,6 +43,7 @@ forceLightCSS.textContent = `
   .hv-section-title { font-weight:700; font-size:12px; letter-spacing:.02em; color:#444 !important; margin:4px 0 -4px; }
   .hv-filter-chip { transition: background .15s ease, color .15s ease, border-color .15s ease, opacity .15s ease, transform .15s ease; }
   .hv-filter-chip:hover { transform: translateY(-1px); }
+  .hv-chrome-anim { transition: opacity .22s ease, transform .22s ease; }
 `;
 document.head.appendChild(forceLightCSS);
 
@@ -83,6 +84,10 @@ Promise.all([
   let currentModelQualityPreset = 'standard';
   let cameraJoystickEnabledByUser = true;
   let minimapEnabledByUser = true;
+  let autoHideUIEnabled = true;
+  let uiAutoHidden = false;
+  let presentationModeActive = false;
+  let presentationSavedState = null;
   let reloadActiveInteriorForModelQuality = function(){};
 
   function normalizePoiType(type){
@@ -694,6 +699,27 @@ function parseFutureProjects(raw){
     panoTransitionVisible = false;
     await waitMs(230);
     if(!panoTransitionVisible) panoTransitionOverlay.style.pointerEvents = 'none';
+  }
+
+  // General HomeView scene transition overlay. Reuses the soft panorama loading layer
+  // so model switches, unit entry, and building-view returns feel consistent.
+  async function showSceneTransition(message){
+    return showPanoramaTransition(message || 'Loading view...');
+  }
+  async function hideSceneTransition(){
+    return hidePanoramaTransition();
+  }
+  async function withSceneTransition(message, action, minVisibleMs){
+    const minMs = Math.max(0, Number(minVisibleMs || (IS_MOBILE ? 120 : 180)) || 0);
+    const t0 = performance.now();
+    await showSceneTransition(message || 'Loading view...');
+    try{
+      return await action();
+    } finally {
+      const elapsed = performance.now() - t0;
+      if(elapsed < minMs) await waitMs(minMs - elapsed);
+      await hideSceneTransition();
+    }
   }
 
   const finishCard = document.createElement('div');
@@ -1423,11 +1449,16 @@ async function refreshFutureProjects(bIdx){
   displayOptionsWrap.style.cssText = 'margin-top:12px;padding-top:10px;border-top:1px solid rgba(0,0,0,.08);display:flex;flex-direction:column;gap:8px;font-size:13px;';
   displayOptionsWrap.innerHTML = `
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showJoystickToggle" type="checkbox"> Show camera joystick</label>
-    <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showMinimapToggle" type="checkbox" checked> Show minimap</label>`;
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showMinimapToggle" type="checkbox" checked> Show minimap</label>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="autoHideUIToggle" type="checkbox" checked> Auto-hide UI when idle</label>
+    <button id="presentationModeBtn" class="ui-btn" style="width:100%;border-radius:8px;padding:8px;cursor:pointer;font-weight:700">Presentation Mode</button>`;
   gfxCard.appendChild(displayOptionsWrap);
   const showJoystickToggle = displayOptionsWrap.querySelector('#showJoystickToggle');
   const showMinimapToggle = displayOptionsWrap.querySelector('#showMinimapToggle');
+  const autoHideUIToggle = displayOptionsWrap.querySelector('#autoHideUIToggle');
+  const presentationModeBtn = displayOptionsWrap.querySelector('#presentationModeBtn');
   showJoystickToggle.checked = cameraJoystickEnabledByUser;
+  autoHideUIToggle.checked = autoHideUIEnabled;
   const editorAuthWrap = document.createElement('div');
   editorAuthWrap.style.cssText = "margin-top:12px;padding-top:12px;border-top:1px solid rgba(0,0,0,.08);display:flex;flex-direction:column;gap:8px";
   editorAuthWrap.innerHTML = `
@@ -1456,12 +1487,608 @@ async function refreshFutureProjects(bIdx){
   openAnalyticsBtn.style.cssText = 'width:100%;display:none;';
   editorAuthWrap.appendChild(openAnalyticsBtn);
 
+
+  // ===== Cinematic Camera Tool (Admin-only MVP: Start -> End path) =====
+  const cinematicCard = document.createElement('div');
+  cinematicCard.className = 'ui-card';
+  cinematicCard.style.cssText = 'position:fixed;right:16px;bottom:68px;width:320px;max-width:92vw;max-height:72vh;overflow:auto;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.20);z-index:2350;padding:12px;font-family:sans-serif;font-size:14px;display:none;flex-direction:column;gap:8px;';
+  cinematicCard.innerHTML = `
+    <div style="font-weight:700;font-size:13px;">Cinematic Camera Tool</div>
+    <div style="font-size:12px;line-height:1.45;color:#555;">Move the camera to the desired start frame, save it, then move to the end frame and play.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <button id="cinSetStartBtn" class="ui-btn" style="border-radius:8px;padding:8px;cursor:pointer;font-size:12px;">Set Start</button>
+      <button id="cinSetEndBtn" class="ui-btn" style="border-radius:8px;padding:8px;cursor:pointer;font-size:12px;">Set End</button>
+    </div>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;">Duration (seconds)
+      <input id="cinDurationInput" class="ui-input" type="number" min="2" max="60" step="1" value="8" style="padding:8px;border-radius:8px;">
+    </label>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;">Camera rotation
+      <select id="cinRotationModeSelect" class="ui-select" style="padding:8px;border-radius:8px;">
+        <option value="smooth">Smooth start-to-end rotation</option>
+        <option value="locked">Keep start angle fixed</option>
+        <option value="focus">Look at focus target</option>
+      </select>
+    </label>
+    <div style="border-top:1px solid rgba(0,0,0,.08);padding-top:8px;display:flex;flex-direction:column;gap:8px;">
+      <div style="font-weight:700;font-size:12px;">Focus Target</div>
+      <div style="font-size:12px;line-height:1.45;color:#555;">For focus mode, click Set Focus Target, then click any point in the scene. The camera will move from Start to End while looking at that point.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <button id="cinSetFocusBtn" class="ui-btn" style="border-radius:8px;padding:8px;cursor:pointer;font-size:12px;">Set Focus Target</button>
+        <button id="cinClearFocusBtn" class="ui-btn" style="border-radius:8px;padding:8px;cursor:pointer;font-size:12px;">Clear Focus</button>
+      </div>
+      <div id="cinFocusStatus" style="font-size:12px;color:#555;line-height:1.45;">Focus target not set.</div>
+    </div>
+    <div style="border-top:1px solid rgba(0,0,0,.08);padding-top:8px;display:flex;flex-direction:column;gap:8px;">
+      <div style="font-weight:700;font-size:12px;">Orbit Mode</div>
+      <div style="font-size:12px;line-height:1.45;color:#555;">Create a smooth circular camera move around the selected building or the Focus Target.</div>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;">Orbit center
+        <select id="cinOrbitCenterSelect" class="ui-select" style="padding:8px;border-radius:8px;">
+          <option value="building">Selected building</option>
+          <option value="focus">Focus target</option>
+        </select>
+      </label>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;">Orbit direction
+        <select id="cinOrbitDirectionSelect" class="ui-select" style="padding:8px;border-radius:8px;">
+          <option value="cw">Clockwise</option>
+          <option value="ccw">Counterclockwise</option>
+        </select>
+      </label>
+      <button id="cinOrbitPlayBtn" class="ui-btn" style="border-radius:8px;padding:8px;cursor:pointer;font-weight:700;">Play Orbit</button>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;"><input id="cinHideUiToggle" type="checkbox" checked> Hide UI while playing</label>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <button id="cinPlayBtn" class="ui-btn" style="border-radius:8px;padding:8px;cursor:pointer;font-weight:700;">Play Path</button>
+      <button id="cinStopBtn" class="ui-btn" style="border-radius:8px;padding:8px;cursor:pointer;">Stop</button>
+    </div>
+    <div id="cinStatus" style="font-size:12px;color:#555;line-height:1.45;">Start and End are not set.</div>`;
+  const cinematicToolBtn = document.createElement('button');
+  cinematicToolBtn.type = 'button';
+  cinematicToolBtn.className = 'ui-btn hv-chrome-anim';
+  cinematicToolBtn.title = 'Cinematic Camera Tool';
+  cinematicToolBtn.setAttribute('aria-label', 'Cinematic Camera Tool');
+  cinematicToolBtn.textContent = '🎬';
+  cinematicToolBtn.style.cssText = 'position:fixed;right:68px;bottom:16px;width:44px;height:44px;border-radius:999px;box-shadow:0 2px 10px rgba(0,0,0,.18);z-index:2120;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:18px;line-height:1;';
+  document.body.appendChild(cinematicToolBtn);
+  document.body.appendChild(cinematicCard);
+  function isCinematicPanelOpen(){
+    return !!(cinematicCard && cinematicCard.style.display !== 'none' && cinematicCard.style.display !== '');
+  }
+  let cinematicSetupFreeCameraActive = false;
+  function enterCinematicSetupFreeCamera(){
+    if(cinematicIsPlaying || currentMode !== 'exterior' || cinematicSetupFreeCameraActive) return;
+    cinematicSetupFreeCameraActive = true;
+    try{
+      // While setting Start/End in Building View, unlock the camera like interior mode
+      // so admins can frame exact camera positions and angles.
+      stopCameraTracking();
+      setInteriorMouseBindings();
+      interiorNav.enable();
+      setJoystickVisible(true);
+    }catch(_){ }
+  }
+  function exitCinematicSetupFreeCamera(){
+    if(!cinematicSetupFreeCameraActive) return;
+    cinematicSetupFreeCameraActive = false;
+    try{
+      if(currentMode === 'exterior'){
+        setExteriorMouseBindings();
+        interiorNav.disable();
+        setJoystickVisible(false);
+      }else if(currentMode === 'interior'){
+        setInteriorMouseBindings();
+        interiorNav.enable();
+        setJoystickVisible(true);
+      }else if(currentMode === 'panorama'){
+        setPanoramaMouseBindings();
+        interiorNav.disable();
+        setJoystickVisible(false);
+      }
+    }catch(_){ }
+  }
+  function setCinematicPanelOpen(open){
+    const shouldOpen = !!open;
+    cinematicCard.style.display = shouldOpen ? 'flex' : 'none';
+    if(shouldOpen){
+      try{ gfxCard.style.display = 'none'; }catch(_){ }
+      enterCinematicSetupFreeCamera();
+    }else{
+      cinematicFocusPickPending = false;
+      updateCinematicStatus();
+      exitCinematicSetupFreeCamera();
+    }
+    markUiActive();
+  }
+  cinematicToolBtn.addEventListener('click', function(){
+    setCinematicPanelOpen(!isCinematicPanelOpen());
+  });
+  const cinSetStartBtn = cinematicCard.querySelector('#cinSetStartBtn');
+  const cinSetEndBtn = cinematicCard.querySelector('#cinSetEndBtn');
+  const cinDurationInput = cinematicCard.querySelector('#cinDurationInput');
+  const cinRotationModeSelect = cinematicCard.querySelector('#cinRotationModeSelect');
+  const cinSetFocusBtn = cinematicCard.querySelector('#cinSetFocusBtn');
+  const cinClearFocusBtn = cinematicCard.querySelector('#cinClearFocusBtn');
+  const cinFocusStatus = cinematicCard.querySelector('#cinFocusStatus');
+  const cinOrbitCenterSelect = cinematicCard.querySelector('#cinOrbitCenterSelect');
+  const cinOrbitDirectionSelect = cinematicCard.querySelector('#cinOrbitDirectionSelect');
+  const cinOrbitPlayBtn = cinematicCard.querySelector('#cinOrbitPlayBtn');
+  const cinHideUiToggle = cinematicCard.querySelector('#cinHideUiToggle');
+  const cinPlayBtn = cinematicCard.querySelector('#cinPlayBtn');
+  const cinStopBtn = cinematicCard.querySelector('#cinStopBtn');
+  const cinStatus = cinematicCard.querySelector('#cinStatus');
+
+  let cinematicStartCamera = null;
+  let cinematicEndCamera = null;
+  let cinematicFocusTarget = null;
+  let cinematicFocusMarkerEntity = null;
+  let cinematicFocusPickPending = false;
+  let cinematicSavedEntityVisuals = null;
+  let cinematicIsPlaying = false;
+  let cinematicStopRequested = false;
+  let cinematicSavedInputState = null;
+  let cinematicSavedChromeState = null;
+
+  function captureCameraState(){
+    const cam = viewer.camera;
+    return {
+      position: Cesium.Cartesian3.clone(cam.positionWC),
+      heading: cam.heading || 0,
+      pitch: cam.pitch || 0,
+      roll: cam.roll || 0
+    };
+  }
+  function makeCameraOrientationLookAt(position, target){
+    if(!Cesium.defined(position) || !Cesium.defined(target)) return null;
+    const safePosition = Cesium.Cartesian3.clone(position, new Cesium.Cartesian3());
+    const safeTarget = Cesium.Cartesian3.clone(target, new Cesium.Cartesian3());
+    if(!Cesium.defined(safePosition) || !Cesium.defined(safeTarget)) return null;
+
+    const direction = Cesium.Cartesian3.subtract(safeTarget, safePosition, new Cesium.Cartesian3());
+    if(Cesium.Cartesian3.magnitude(direction) < 0.001) return null;
+    Cesium.Cartesian3.normalize(direction, direction);
+
+    let up = Cesium.Cartesian3.normalize(safePosition, new Cesium.Cartesian3());
+    let right = Cesium.Cartesian3.cross(direction, up, new Cesium.Cartesian3());
+
+    // If the camera direction is almost parallel to the world-up vector, use Cesium's unit Z as a stable fallback.
+    if(Cesium.Cartesian3.magnitude(right) < 0.001){
+      up = Cesium.Cartesian3.clone(Cesium.Cartesian3.UNIT_Z, new Cesium.Cartesian3());
+      right = Cesium.Cartesian3.cross(direction, up, new Cesium.Cartesian3());
+    }
+    if(Cesium.Cartesian3.magnitude(right) < 0.001) return null;
+
+    Cesium.Cartesian3.normalize(right, right);
+    const correctedUp = Cesium.Cartesian3.cross(right, direction, new Cesium.Cartesian3());
+    Cesium.Cartesian3.normalize(correctedUp, correctedUp);
+
+    // Cesium.Matrix4.fromCamera expects a camera-like object with `position`, not `destination`.
+    const transform = Cesium.Matrix4.fromCamera({ position: safePosition, direction: direction, up: correctedUp });
+    return Cesium.Transforms.fixedFrameToHeadingPitchRoll(transform);
+  }
+
+  // Camera-stand style look-at: move the camera position separately, then point the camera at target using direction/up.
+  // This avoids heading/pitch/roll axis confusion in Cesium's Earth-fixed frame.
+  function makeCameraDirectionUpLookAt(position, target){
+    if(!Cesium.defined(position) || !Cesium.defined(target)) return null;
+    const safePosition = Cesium.Cartesian3.clone(position, new Cesium.Cartesian3());
+    const safeTarget = Cesium.Cartesian3.clone(target, new Cesium.Cartesian3());
+    const direction = Cesium.Cartesian3.subtract(safeTarget, safePosition, new Cesium.Cartesian3());
+    if(!Cesium.defined(direction) || Cesium.Cartesian3.magnitude(direction) < 0.001) return null;
+    Cesium.Cartesian3.normalize(direction, direction);
+
+    let upCandidate = null;
+    try{
+      const ellipsoid = viewer && viewer.scene && viewer.scene.globe && viewer.scene.globe.ellipsoid;
+      if(ellipsoid) upCandidate = ellipsoid.geodeticSurfaceNormal(safePosition, new Cesium.Cartesian3());
+    }catch(_){ upCandidate = null; }
+    if(!Cesium.defined(upCandidate)){
+      try{ upCandidate = Cesium.Cartesian3.normalize(safePosition, new Cesium.Cartesian3()); }catch(_){ upCandidate = null; }
+    }
+    if(!Cesium.defined(upCandidate) || Cesium.Cartesian3.magnitude(upCandidate) < 0.001){
+      upCandidate = Cesium.Cartesian3.clone(Cesium.Cartesian3.UNIT_Z, new Cesium.Cartesian3());
+    }
+
+    let right = Cesium.Cartesian3.cross(direction, upCandidate, new Cesium.Cartesian3());
+    if(Cesium.Cartesian3.magnitude(right) < 0.001){
+      upCandidate = Cesium.Cartesian3.clone(Cesium.Cartesian3.UNIT_Y, new Cesium.Cartesian3());
+      right = Cesium.Cartesian3.cross(direction, upCandidate, new Cesium.Cartesian3());
+    }
+    if(Cesium.Cartesian3.magnitude(right) < 0.001){
+      upCandidate = Cesium.Cartesian3.clone(Cesium.Cartesian3.UNIT_X, new Cesium.Cartesian3());
+      right = Cesium.Cartesian3.cross(direction, upCandidate, new Cesium.Cartesian3());
+    }
+    if(Cesium.Cartesian3.magnitude(right) < 0.001) return null;
+
+    Cesium.Cartesian3.normalize(right, right);
+    const up = Cesium.Cartesian3.cross(right, direction, new Cesium.Cartesian3());
+    Cesium.Cartesian3.normalize(up, up);
+    return { direction: direction, up: up };
+  }
+  function updateCinematicFocusMarker(){
+    if(!cinematicFocusTarget){
+      if(cinematicFocusMarkerEntity){ try{ viewer.entities.remove(cinematicFocusMarkerEntity); }catch(_){ } cinematicFocusMarkerEntity = null; }
+      return;
+    }
+    if(!cinematicFocusMarkerEntity){
+      cinematicFocusMarkerEntity = viewer.entities.add({
+        position: cinematicFocusTarget,
+        properties: { hvCinematicFocusTarget: true },
+        point: { pixelSize: 12, color: Cesium.Color.fromCssColorString('#ffb300'), outlineColor: Cesium.Color.WHITE, outlineWidth: 3, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+        label: { text: 'Focus Target', font: 'bold 13px sans-serif', fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK, outlineWidth: 2, style: Cesium.LabelStyle.FILL_AND_OUTLINE, showBackground: true, backgroundColor: Cesium.Color.fromCssColorString('#ff8f00').withAlpha(0.92), verticalOrigin: Cesium.VerticalOrigin.BOTTOM, pixelOffset: new Cesium.Cartesian2(0, -18), disableDepthTestDistance: Number.POSITIVE_INFINITY }
+      });
+    }else{
+      cinematicFocusMarkerEntity.position = cinematicFocusTarget;
+      cinematicFocusMarkerEntity.show = true;
+    }
+    requestSceneRenderBurst(2);
+  }
+  function getWorldPositionFromScreen(screenPos){
+    const scene = viewer.scene;
+    let world = null;
+    try{
+      if(scene.pickPositionSupported){ world = scene.pickPosition(screenPos); }
+    }catch(_){ world = null; }
+    if(Cesium.defined(world)) return world;
+    try{
+      const ray = viewer.camera.getPickRay(screenPos);
+      if(ray && scene.globe) world = scene.globe.pick(ray, scene);
+    }catch(_){ world = null; }
+    if(Cesium.defined(world)) return world;
+    try{ world = viewer.camera.pickEllipsoid(screenPos, viewer.scene.globe && viewer.scene.globe.ellipsoid); }catch(_){ world = null; }
+    return Cesium.defined(world) ? world : null;
+  }
+  function handleCinematicFocusPlacement(screenPos){
+    if(!cinematicFocusPickPending) return false;
+    cinematicFocusPickPending = false;
+    const world = getWorldPositionFromScreen(screenPos);
+    if(!world){
+      if(cinFocusStatus) cinFocusStatus.textContent = 'Could not place focus target. Try clicking directly on a visible surface.';
+      updateCinematicStatus();
+      return true;
+    }
+    cinematicFocusTarget = Cesium.Cartesian3.clone(world);
+    if(cinRotationModeSelect) cinRotationModeSelect.value = 'focus';
+    updateCinematicFocusMarker();
+    updateCinematicStatus();
+    return true;
+  }
+  function shortestAngleLerp(a, b, t){
+    let delta = (b - a) % (Math.PI * 2);
+    if(delta > Math.PI) delta -= Math.PI * 2;
+    if(delta < -Math.PI) delta += Math.PI * 2;
+    return a + delta * t;
+  }
+  function easeInOutCubic(t){
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+  function updateCinematicStatus(){
+    if(cinFocusStatus) cinFocusStatus.textContent = cinematicFocusTarget ? 'Focus target set.' : (cinematicFocusPickPending ? 'Click the scene to place focus target...' : 'Focus target not set.');
+    if(!cinStatus) return;
+    if(cinematicIsPlaying){ cinStatus.textContent = 'Playing cinematic camera move...'; return; }
+    const s = cinematicStartCamera ? 'Start set' : 'Start not set';
+    const e = cinematicEndCamera ? 'End set' : 'End not set';
+    const f = cinematicFocusTarget ? 'Focus set' : 'Focus not set';
+    cinStatus.textContent = s + ' • ' + e + ' • ' + f;
+  }
+  function setCinematicInputsEnabled(enabled){
+    [cinSetStartBtn, cinSetEndBtn, cinSetFocusBtn, cinClearFocusBtn, cinDurationInput, cinRotationModeSelect, cinOrbitCenterSelect, cinOrbitDirectionSelect, cinOrbitPlayBtn, cinHideUiToggle, cinPlayBtn].forEach(function(el){ if(el) el.disabled = !enabled; });
+    if(cinStopBtn) cinStopBtn.disabled = !!enabled;
+  }
+  function hideCinematicChrome(){
+    if(!cinHideUiToggle || !cinHideUiToggle.checked || presentationModeActive) return;
+    const miniRoot = getMiniRoot ? getMiniRoot() : document.getElementById('miniTopRight');
+    const compassRoot = getCompassRoot ? getCompassRoot() : document.getElementById('compass');
+    cinematicSavedChromeState = {
+      chartDisplay: chartDiv.style.display,
+      gfxBtnDisplay: gfxBtn.style.display,
+      gfxCardDisplay: gfxCard.style.display,
+      cinBtnDisplay: cinematicToolBtn ? cinematicToolBtn.style.display : null,
+      cinCardDisplay: cinematicCard ? cinematicCard.style.display : null,
+      miniDisplay: miniRoot ? miniRoot.style.display : null,
+      compassDisplay: compassRoot ? compassRoot.style.display : null
+    };
+    try{ gfxCard.style.display = 'none'; }catch(_){ }
+    try{ chartDiv.style.display = 'none'; }catch(_){ }
+    try{ gfxBtn.style.display = 'none'; }catch(_){ }
+    try{ if(cinematicToolBtn) cinematicToolBtn.style.display = 'none'; }catch(_){ }
+    try{ if(cinematicCard) cinematicCard.style.display = 'none'; }catch(_){ }
+    if(miniRoot) miniRoot.style.display = 'none';
+    if(compassRoot) compassRoot.style.display = 'none';
+    try{
+      cinematicSavedEntityVisuals = [];
+      viewer.entities.values.forEach(function(ent){
+        const rec = { ent: ent };
+        let used = false;
+        if(ent.label){ rec.labelShow = ent.label.show; ent.label.show = false; used = true; }
+        if(ent.point && ent.properties && ent.properties.hvInteriorEntry){ rec.pointShow = ent.point.show; ent.point.show = false; used = true; }
+        if(ent.properties && ent.properties.hvCinematicFocusTarget){ rec.entityShow = ent.show; ent.show = false; used = true; }
+        if(used) cinematicSavedEntityVisuals.push(rec);
+      });
+    }catch(_){ cinematicSavedEntityVisuals = null; }
+  }
+  function restoreCinematicChrome(){
+    if(!cinematicSavedChromeState || presentationModeActive) return;
+    const st = cinematicSavedChromeState;
+    const miniRoot = getMiniRoot ? getMiniRoot() : document.getElementById('miniTopRight');
+    const compassRoot = getCompassRoot ? getCompassRoot() : document.getElementById('compass');
+    try{ chartDiv.style.display = st.chartDisplay || 'flex'; setElementSoftHidden(chartDiv, false); }catch(_){ }
+    try{ gfxBtn.style.display = st.gfxBtnDisplay || 'flex'; setElementSoftHidden(gfxBtn, false); }catch(_){ }
+    try{ gfxCard.style.display = st.gfxCardDisplay || 'none'; }catch(_){ }
+    try{ if(cinematicToolBtn){ cinematicToolBtn.style.display = st.cinBtnDisplay || (isEditorAdmin() ? 'flex' : 'none'); setElementSoftHidden(cinematicToolBtn, false); } }catch(_){ }
+    try{ if(cinematicCard) cinematicCard.style.display = st.cinCardDisplay || 'none'; }catch(_){ }
+    if(miniRoot){ miniRoot.style.display = minimapEnabledByUser ? (st.miniDisplay || 'block') : 'none'; setElementSoftHidden(miniRoot, false); }
+    if(compassRoot){ compassRoot.style.display = st.compassDisplay || 'flex'; setElementSoftHidden(compassRoot, false); }
+    try{
+      if(cinematicSavedEntityVisuals){
+        cinematicSavedEntityVisuals.forEach(function(rec){
+          if(!rec || !rec.ent) return;
+          if(rec.ent.label && Object.prototype.hasOwnProperty.call(rec, 'labelShow')) rec.ent.label.show = rec.labelShow;
+          if(rec.ent.point && Object.prototype.hasOwnProperty.call(rec, 'pointShow')) rec.ent.point.show = rec.pointShow;
+          if(Object.prototype.hasOwnProperty.call(rec, 'entityShow')) rec.ent.show = rec.entityShow;
+        });
+      }
+    }catch(_){ }
+    cinematicSavedEntityVisuals = null;
+    cinematicSavedChromeState = null;
+    uiAutoHidden = false;
+    markUiActive();
+  }
+  function lockCameraInputsForCinematic(){
+    const ctrl = viewer.scene && viewer.scene.screenSpaceCameraController;
+    if(!ctrl) return;
+    cinematicSavedInputState = {
+      enableInputs: ctrl.enableInputs,
+      enableRotate: ctrl.enableRotate,
+      enableTranslate: ctrl.enableTranslate,
+      enableTilt: ctrl.enableTilt,
+      enableLook: ctrl.enableLook,
+      enableZoom: ctrl.enableZoom
+    };
+    ctrl.enableInputs = false;
+    ctrl.enableRotate = false;
+    ctrl.enableTranslate = false;
+    ctrl.enableTilt = false;
+    ctrl.enableLook = false;
+    ctrl.enableZoom = false;
+    try{ interiorNav.disable(); }catch(_){ }
+    try{ setJoystickVisible(false); }catch(_){ }
+  }
+  function restoreCameraInputsAfterCinematic(){
+    const ctrl = viewer.scene && viewer.scene.screenSpaceCameraController;
+    if(ctrl && cinematicSavedInputState){
+      ctrl.enableInputs = cinematicSavedInputState.enableInputs;
+      ctrl.enableRotate = cinematicSavedInputState.enableRotate;
+      ctrl.enableTranslate = cinematicSavedInputState.enableTranslate;
+      ctrl.enableTilt = cinematicSavedInputState.enableTilt;
+      ctrl.enableLook = cinematicSavedInputState.enableLook;
+      ctrl.enableZoom = cinematicSavedInputState.enableZoom;
+    }
+    cinematicSavedInputState = null;
+    try{
+      if(currentMode === 'interior'){
+        setInteriorMouseBindings();
+        interiorNav.enable();
+        setJoystickVisible(true);
+      }else if(currentMode === 'panorama'){
+        setPanoramaMouseBindings();
+      }else{
+        if(isCinematicPanelOpen && isCinematicPanelOpen()){
+          setInteriorMouseBindings();
+          interiorNav.enable();
+          setJoystickVisible(true);
+          cinematicSetupFreeCameraActive = true;
+        }else{
+          setExteriorMouseBindings();
+          interiorNav.disable();
+          setJoystickVisible(false);
+        }
+      }
+    }catch(_){ }
+  }
+  async function getCinematicOrbitCenter(){
+    const centerMode = String((cinOrbitCenterSelect && cinOrbitCenterSelect.value) || 'building');
+    if(centerMode === 'focus'){
+      if(!cinematicFocusTarget) return null;
+      return Cesium.Cartesian3.clone(cinematicFocusTarget, new Cesium.Cartesian3());
+    }
+    try{
+      const idx = Number(selectBox && selectBox.value || 0);
+      const row = buildingsData[idx] || null;
+      if(!row) return null;
+      const lon = toNum(row.lng), lat = toNum(row.lat);
+      const height = toNum(row.height) || 20;
+      if(!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+      const center = await getBuildingSurfacePosition(lon, lat, height);
+      return Cesium.Cartesian3.clone(center, new Cesium.Cartesian3());
+    }catch(_){ return null; }
+  }
+
+  async function playCinematicOrbit(){
+    if(cinematicIsPlaying) return;
+    if(!isEditorAdmin()){
+      cinStatus.textContent = 'Editor login required.';
+      return;
+    }
+    const center = await getCinematicOrbitCenter();
+    if(!center){
+      cinStatus.textContent = 'Orbit needs a valid center. Select Building or set a Focus Target first.';
+      return;
+    }
+    const duration = Math.max(2, Math.min(60, Number(cinDurationInput.value || 8))) * 1000;
+    const clockwise = String((cinOrbitDirectionSelect && cinOrbitDirectionSelect.value) || 'cw') === 'cw';
+    const angleTotal = (clockwise ? -1 : 1) * Math.PI * 2;
+    const startCamera = captureCameraState();
+    const startPosition = Cesium.Cartesian3.clone(startCamera.position, new Cesium.Cartesian3());
+
+    const enu = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+    const invEnu = Cesium.Matrix4.inverse(enu, new Cesium.Matrix4());
+    const localStart = Cesium.Matrix4.multiplyByPoint(invEnu, startPosition, new Cesium.Cartesian3());
+    let radius = Math.hypot(localStart.x, localStart.y);
+    if(!Number.isFinite(radius) || radius < 0.5){
+      cinStatus.textContent = 'Move the camera away from the orbit center, then try again.';
+      return;
+    }
+    const startAngle = Math.atan2(localStart.y, localStart.x);
+    const localZ = Number.isFinite(localStart.z) ? localStart.z : 0;
+
+    cinematicIsPlaying = true;
+    cinematicStopRequested = false;
+    setCinematicInputsEnabled(false);
+    updateCinematicStatus();
+    hideCinematicChrome();
+    cinematicSetupFreeCameraActive = false;
+    lockCameraInputsForCinematic();
+
+    const startTime = performance.now();
+    const localPos = new Cesium.Cartesian3();
+    const worldPos = new Cesium.Cartesian3();
+
+    await new Promise(function(resolve){
+      function frame(now){
+        if(cinematicStopRequested){ resolve(); return; }
+        const rawT = Math.min(1, (now - startTime) / duration);
+        const t = easeInOutCubic(rawT);
+        const a = startAngle + angleTotal * t;
+        localPos.x = Math.cos(a) * radius;
+        localPos.y = Math.sin(a) * radius;
+        localPos.z = localZ;
+        Cesium.Matrix4.multiplyByPoint(enu, localPos, worldPos);
+        const look = makeCameraDirectionUpLookAt(worldPos, center);
+        try{
+          if(look){
+            viewer.camera.setView({
+              destination: Cesium.Cartesian3.clone(worldPos, new Cesium.Cartesian3()),
+              orientation: { direction: look.direction, up: look.up }
+            });
+          }
+          requestSceneRender();
+        }catch(e){ console.warn('Cinematic orbit frame failed:', e); }
+        if(rawT < 1) requestAnimationFrame(frame);
+        else resolve();
+      }
+      requestAnimationFrame(frame);
+    });
+
+    cinematicIsPlaying = false;
+    cinematicStopRequested = false;
+    restoreCameraInputsAfterCinematic();
+    restoreCinematicChrome();
+    setCinematicInputsEnabled(true);
+    updateCinematicStatus();
+    requestSceneRenderBurst(2);
+  }
+
+  async function playCinematicPath(){
+    if(cinematicIsPlaying) return;
+    if(!isEditorAdmin()){
+      cinStatus.textContent = 'Editor login required.';
+      return;
+    }
+    if(!cinematicStartCamera || !cinematicEndCamera){
+      cinStatus.textContent = 'Please set both Start and End camera positions first.';
+      return;
+    }
+    const duration = Math.max(2, Math.min(60, Number(cinDurationInput.value || 8))) * 1000;
+    const rotationMode = String(cinRotationModeSelect.value || 'smooth');
+    if(rotationMode === 'focus' && !cinematicFocusTarget){
+      cinStatus.textContent = 'Focus mode needs a focus target. Press Set Focus Target and click the scene first.';
+      return;
+    }
+    cinematicIsPlaying = true;
+    cinematicStopRequested = false;
+    setCinematicInputsEnabled(false);
+    updateCinematicStatus();
+    hideCinematicChrome();
+    cinematicSetupFreeCameraActive = false;
+    lockCameraInputsForCinematic();
+
+    const startTime = performance.now();
+    const start = cinematicStartCamera;
+    const end = cinematicEndCamera;
+    const tmpPos = new Cesium.Cartesian3();
+
+    await new Promise(function(resolve){
+      function frame(now){
+        if(cinematicStopRequested){ resolve(); return; }
+        const rawT = Math.min(1, (now - startTime) / duration);
+        const t = easeInOutCubic(rawT);
+        Cesium.Cartesian3.lerp(start.position, end.position, t, tmpPos);
+        let heading = start.heading;
+        let pitch = start.pitch;
+        let roll = start.roll;
+        let focusLook = null;
+        if(rotationMode === 'focus'){
+          focusLook = makeCameraDirectionUpLookAt(tmpPos, cinematicFocusTarget);
+        }else if(rotationMode !== 'locked'){
+          heading = shortestAngleLerp(start.heading, end.heading, t);
+          pitch = Cesium.Math.lerp(start.pitch, end.pitch, t);
+          roll = shortestAngleLerp(start.roll, end.roll, t);
+        }
+        try{
+          if(rotationMode === 'focus' && focusLook){
+            // Unity-style camera stand behavior: destination moves on the path, camera direction looks at target.
+            viewer.camera.setView({
+              destination: Cesium.Cartesian3.clone(tmpPos, new Cesium.Cartesian3()),
+              orientation: { direction: focusLook.direction, up: focusLook.up }
+            });
+          }else{
+            viewer.camera.setView({
+              destination: tmpPos,
+              orientation: { heading: heading, pitch: pitch, roll: roll }
+            });
+          }
+          requestSceneRender();
+        }catch(e){ console.warn('Cinematic camera frame failed:', e); }
+        if(rawT < 1) requestAnimationFrame(frame);
+        else resolve();
+      }
+      requestAnimationFrame(frame);
+    });
+
+    cinematicIsPlaying = false;
+    cinematicStopRequested = false;
+    restoreCameraInputsAfterCinematic();
+    restoreCinematicChrome();
+    setCinematicInputsEnabled(true);
+    updateCinematicStatus();
+    requestSceneRenderBurst(2);
+  }
+  cinSetStartBtn.addEventListener('click', function(){
+    cinematicStartCamera = captureCameraState();
+    updateCinematicStatus();
+  });
+  cinSetEndBtn.addEventListener('click', function(){
+    cinematicEndCamera = captureCameraState();
+    updateCinematicStatus();
+  });
+  cinSetFocusBtn.addEventListener('click', function(){
+    cinematicFocusPickPending = true;
+    updateCinematicStatus();
+  });
+  cinClearFocusBtn.addEventListener('click', function(){
+    cinematicFocusPickPending = false;
+    cinematicFocusTarget = null;
+    updateCinematicFocusMarker();
+    if(cinRotationModeSelect && cinRotationModeSelect.value === 'focus') cinRotationModeSelect.value = 'smooth';
+    updateCinematicStatus();
+  });
+  cinPlayBtn.addEventListener('click', playCinematicPath);
+  if(cinOrbitPlayBtn) cinOrbitPlayBtn.addEventListener('click', playCinematicOrbit);
+  cinStopBtn.addEventListener('click', function(){
+    cinematicStopRequested = true;
+  });
+  setCinematicInputsEnabled(true);
+  updateCinematicStatus();
+
   function deg2rad(d){ return d * Math.PI / 180; }
   function applyFixedInteriorFov(){
     const fr = viewer.camera.frustum;
     if(fr && 'fov' in fr) fr.fov = deg2rad(DEFAULT_INTERIOR_FOV_DEG);
   }
-  gfxBtn.addEventListener('click', ()=>{ gfxCard.style.display = (gfxCard.style.display === 'none' || !gfxCard.style.display) ? 'block' : 'none'; });
+  gfxBtn.addEventListener('click', ()=>{
+    gfxCard.style.display = (gfxCard.style.display === 'none' || !gfxCard.style.display) ? 'block' : 'none';
+    try{ if(cinematicCard) cinematicCard.style.display = 'none'; }catch(_){ }
+    markUiActive();
+  });
   showJoystickToggle.addEventListener('change', function(){
     cameraJoystickEnabledByUser = !!showJoystickToggle.checked;
     setJoystickVisible(currentMode === 'interior');
@@ -1475,6 +2102,103 @@ async function refreshFutureProjects(bIdx){
     }catch(_){ }
   });
 
+
+  const presentationExitBtn = document.createElement('button');
+  presentationExitBtn.type = 'button';
+  presentationExitBtn.className = 'ui-btn hv-chrome-anim';
+  presentationExitBtn.textContent = 'Exit Presentation';
+  presentationExitBtn.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2600;border-radius:999px;padding:10px 14px;font-weight:700;box-shadow:0 8px 24px rgba(0,0,0,.18);display:none;cursor:pointer';
+  document.body.appendChild(presentationExitBtn);
+
+  function setElementSoftHidden(el, hidden){
+    if(!el) return;
+    try{ el.classList.add('hv-chrome-anim'); }catch(_){ }
+    if(hidden){
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(4px)';
+      el.style.pointerEvents = 'none';
+    }else{
+      el.style.opacity = '1';
+      el.style.transform = 'translateY(0)';
+      el.style.pointerEvents = 'auto';
+    }
+  }
+  function getMiniRoot(){ return document.getElementById('miniTopRight'); }
+  function getCompassRoot(){ return document.getElementById('compass'); }
+
+  function applyPresentationMode(active){
+    presentationModeActive = !!active;
+    if(presentationModeActive){
+      presentationSavedState = {
+        collapsed: collapsed,
+        minimap: minimapEnabledByUser,
+        labels: !!(showLabelsToggle && showLabelsToggle.checked)
+      };
+      try{ gfxCard.style.display = 'none'; }catch(_){ }
+      try{ if(cinematicCard) cinematicCard.style.display = 'none'; }catch(_){ }
+      try{ setCollapsed(true); }catch(_){ }
+      chartDiv.style.display = 'none';
+      gfxBtn.style.display = 'none';
+      try{ if(cinematicToolBtn) cinematicToolBtn.style.display = 'none'; }catch(_){ }
+      if(showLabelsToggle){ showLabelsToggle.checked = false; if(typeof renderSelectionLabels === 'function') renderSelectionLabels(); }
+      setJoystickVisible(false);
+      try{ if(typeof mini !== 'undefined' && mini) mini.hide(); }catch(_){ }
+      const miniRoot = getMiniRoot(); if(miniRoot) miniRoot.style.display = 'none';
+      const compassRoot = getCompassRoot(); if(compassRoot) compassRoot.style.display = 'none';
+      presentationExitBtn.style.display = 'block';
+    }else{
+      const saved = presentationSavedState || {};
+      chartDiv.style.display = 'flex';
+      gfxBtn.style.display = 'flex';
+      try{ if(cinematicToolBtn && isEditorAdmin()) cinematicToolBtn.style.display = 'flex'; }catch(_){ }
+      if(showLabelsToggle){ showLabelsToggle.checked = !!saved.labels; renderSelectionLabels(); }
+      if(saved.minimap !== undefined){
+        minimapEnabledByUser = !!saved.minimap;
+        showMinimapToggle.checked = minimapEnabledByUser;
+      }
+      setJoystickVisible(currentMode === 'interior');
+      try{ if(typeof mini !== 'undefined' && mini) { if(minimapEnabledByUser) mini.show(); else mini.hide(); } }catch(_){ }
+      const compassRoot = getCompassRoot(); if(compassRoot) compassRoot.style.display = 'flex';
+      presentationExitBtn.style.display = 'none';
+      if(saved.collapsed !== undefined) setCollapsed(!!saved.collapsed);
+      presentationSavedState = null;
+      markUiActive();
+    }
+    presentationModeBtn.textContent = presentationModeActive ? 'Presentation Mode: On' : 'Presentation Mode';
+    requestSceneRenderBurst(2);
+  }
+  presentationModeBtn.addEventListener('click', function(){ applyPresentationMode(true); });
+  presentationExitBtn.addEventListener('click', function(){ applyPresentationMode(false); });
+
+  let uiAutoHideTimer = null;
+  function setUiAutoHidden(hidden){
+    if(presentationModeActive) return;
+    uiAutoHidden = !!hidden;
+    if((gfxCard.style.display && gfxCard.style.display !== 'none') || (typeof cinematicCard !== 'undefined' && cinematicCard.style.display && cinematicCard.style.display !== 'none')) return;
+    setElementSoftHidden(chartDiv, uiAutoHidden);
+    setElementSoftHidden(gfxBtn, uiAutoHidden);
+    if(typeof cinematicToolBtn !== 'undefined' && cinematicToolBtn.style.display !== 'none') setElementSoftHidden(cinematicToolBtn, uiAutoHidden);
+    const miniRoot = getMiniRoot();
+    if(miniRoot && minimapEnabledByUser) setElementSoftHidden(miniRoot, uiAutoHidden);
+    const compassRoot = getCompassRoot();
+    if(compassRoot) setElementSoftHidden(compassRoot, uiAutoHidden);
+  }
+  function markUiActive(){
+    if(presentationModeActive) return;
+    if(uiAutoHideTimer){ clearTimeout(uiAutoHideTimer); uiAutoHideTimer = null; }
+    setUiAutoHidden(false);
+    if(!autoHideUIEnabled) return;
+    uiAutoHideTimer = setTimeout(function(){ setUiAutoHidden(true); }, 5000);
+  }
+  autoHideUIToggle.addEventListener('change', function(){
+    autoHideUIEnabled = !!autoHideUIToggle.checked;
+    markUiActive();
+  });
+  ['pointermove','mousedown','keydown','touchstart','wheel'].forEach(function(ev){
+    window.addEventListener(ev, markUiActive, { passive:true });
+  });
+  markUiActive();
+
   function updateEditorAuthUI(){
     const auth = getEditorAuthState();
     const unlocked = !!auth;
@@ -1482,6 +2206,8 @@ async function refreshFutureProjects(bIdx){
     editorAuthStatus.textContent = unlocked ? ('Editor mode is unlocked for ' + auth.username + '.') : 'Editor mode is locked.';
     editorLogoutBtn.style.display = unlocked ? 'inline-flex' : 'none';
     openAnalyticsBtn.style.display = unlocked ? 'inline-flex' : 'none';
+    if(typeof cinematicToolBtn !== 'undefined') cinematicToolBtn.style.display = unlocked ? 'flex' : 'none';
+    if(typeof cinematicCard !== 'undefined' && !unlocked) cinematicCard.style.display = 'none';
     if(!unlocked){
       editorPasswordInput.value = '';
     }
@@ -4589,6 +5315,10 @@ adminApplyBtn.onclick = function(){
     // ===== Picking (POI tooltip) =====
     const handler=new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
     handler.setInputAction(async function (m){
+      if(typeof handleCinematicFocusPlacement === 'function' && handleCinematicFocusPlacement(m.position)){
+        tip.style.display='none';
+        return;
+      }
       if(labelEditorState.editMode && labelEditorState.pendingPick){
         const used = handleLabelPlacement(m.position);
         if(used){ tip.style.display='none'; return; }
@@ -4638,6 +5368,27 @@ adminApplyBtn.onclick = function(){
     }
 
     // ===== Update View =====
+    function getViewTransitionMessage(){
+      const selectedValue = viewSelect.value || 'exterior';
+      if(selectedValue === 'exterior') return 'Returning to Building View...';
+      const selectedParts = selectedValue.split(':');
+      const kind = selectedParts[0] || 'unit';
+      const idx = Number(selectedParts[1] || 0);
+      const meta = (interiorMetaByBuilding[Number(selectBox.value)] || [])[idx] || null;
+      const name = getItemDisplayName(meta, 'selected view');
+      if(kind === 'panorama') return 'Loading panorama...';
+      if(kind === 'amenity') return 'Loading amenity...';
+      return name ? ('Entering ' + name + '...') : 'Entering unit...';
+    }
+    async function runViewUpdateWithTransition(idx){
+      const selectedValue = viewSelect.value || 'exterior';
+      const isExteriorTarget = selectedValue === 'exterior';
+      const shouldUseOverlay = !isExteriorTarget || currentMode !== 'exterior';
+      if(!shouldUseOverlay){
+        return updateView(idx);
+      }
+      return withSceneTransition(getViewTransitionMessage(), function(){ return updateView(idx); }, IS_MOBILE ? 180 : 240);
+    }
     function scheduleViewUpdate(){
       const idx = Number(selectBox.value);
       const delay = IS_MOBILE ? 180 : 0;
@@ -4645,10 +5396,10 @@ adminApplyBtn.onclick = function(){
       if(delay > 0){
         mobileViewChangeTimer = setTimeout(function(){
           mobileViewChangeTimer = null;
-          updateView(idx);
+          runViewUpdateWithTransition(idx);
         }, delay);
       } else {
-        updateView(idx);
+        runViewUpdateWithTransition(idx);
       }
     }
 
@@ -4836,9 +5587,32 @@ function hideUnitMetaUI(){
         getBuildingSurfacePosition(lon,lat,height).then(center=>{
           stopCameraTracking();
           setExteriorMouseBindings();
+          const sphereRadius = Math.max(12, Math.max(scale || 0, height || 0));
+          const duration = currentMode === 'exterior' ? (IS_MOBILE ? 0.7 : 1.0) : (IS_MOBILE ? 0.9 : 1.2);
           const orbitFrame = Cesium.Transforms.eastNorthUpToFixedFrame(center);
-          viewer.scene.camera.lookAtTransform(orbitFrame, new Cesium.HeadingPitchRange(heading,pitch,distance));
-          requestSceneRenderBurst(3);
+          const orbitOffset = new Cesium.HeadingPitchRange(heading, pitch, distance);
+          function lockExteriorOrbitCamera(){
+            try{
+              // Keep Building View in a local ENU frame so left-drag rotates around the selected building,
+              // not around the globe/camera position. This restores the original orbit-style exterior control.
+              viewer.scene.camera.lookAtTransform(orbitFrame, orbitOffset);
+            }catch(_){ }
+            setExteriorMouseBindings();
+            requestSceneRenderBurst(4);
+          }
+          try{
+            viewer.camera.flyToBoundingSphere(
+              new Cesium.BoundingSphere(center, sphereRadius),
+              {
+                duration: duration,
+                offset: orbitOffset,
+                complete: lockExteriorOrbitCamera,
+                cancel: lockExteriorOrbitCamera
+              }
+            );
+          }catch(_){
+            lockExteriorOrbitCamera();
+          }
         });
         const fr=viewer.camera.frustum; if(fr && 'fov' in fr) fr.fov=Math.PI/3;
 
@@ -5246,3 +6020,6 @@ function hideUnitMetaUI(){
   updateCompass();
 
 }); // libs loaded
+
+// v37 safeguard
+window.renderSelectionLabels = window.renderSelectionLabels || function(){};
