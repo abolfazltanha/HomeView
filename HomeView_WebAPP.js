@@ -70,6 +70,44 @@ Promise.all([
     return;
   }
 
+  // ===== Initial launch loading overlay =====
+  const launchLoadingOverlay = document.createElement('div');
+  launchLoadingOverlay.id = 'hvLaunchLoadingOverlay';
+  launchLoadingOverlay.style.cssText = `
+    position:fixed;
+    inset:0;
+    z-index:999998;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:linear-gradient(180deg, rgba(7,10,16,.82), rgba(7,10,16,.68));
+    color:#fff;
+    font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;
+    opacity:1;
+    transition:opacity .28s ease;
+    pointer-events:auto;
+  `;
+  launchLoadingOverlay.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;padding:20px 24px;border-radius:18px;background:rgba(0,0,0,.28);backdrop-filter:blur(8px);box-shadow:0 18px 50px rgba(0,0,0,.28);max-width:min(88vw,360px)">
+      <div style="width:34px;height:34px;border-radius:999px;border:3px solid rgba(255,255,255,.28);border-top-color:#fff;animation:hvLaunchSpin .85s linear infinite"></div>
+      <div style="font-weight:800;font-size:17px;letter-spacing:.2px">Loading HomeView</div>
+      <div id="hvLaunchLoadingText" style="font-size:13px;line-height:1.45;opacity:.86">Preparing the 3D experience...</div>
+    </div>
+  `;
+  const launchSpinStyle = document.createElement('style');
+  launchSpinStyle.textContent = '@keyframes hvLaunchSpin{to{transform:rotate(360deg)}}';
+  document.head.appendChild(launchSpinStyle);
+  document.body.appendChild(launchLoadingOverlay);
+  const launchLoadingText = launchLoadingOverlay.querySelector('#hvLaunchLoadingText');
+  function setLaunchLoadingText(msg){ try{ if(launchLoadingText && msg) launchLoadingText.textContent = String(msg); }catch(_){ } }
+  function hideLaunchLoading(){
+    try{
+      launchLoadingOverlay.style.opacity = '0';
+      launchLoadingOverlay.style.pointerEvents = 'none';
+      setTimeout(function(){ try{ launchLoadingOverlay.remove(); }catch(_){ } }, 360);
+    }catch(_){ }
+  }
+
   // ========== Environment flags ==========
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
   const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
@@ -2655,8 +2693,10 @@ async function refreshFutureProjects(bIdx){
   let latestPublicData = null;
 
   // ===== Load & Build =====
+  setLaunchLoadingText('Loading project data...');
   fetchAppJson('get_all_data').then(async (allData)=>{
     if(!allData || !allData.ok) throw new Error((allData && allData.error) || 'Unable to load project data from Apps Script');
+    setLaunchLoadingText('Building the 3D scene...');
     const b = (allData.buildings || []).map(canonicalizeRow).filter(r=>r.model_url && r.lat && r.lng && (r.estimated_price || r.estimated_price_first));
     buildingsData = b;
     const p = (allData.pois || []).map(canonicalizeRow).filter(r=>r.name && r.lat && r.lng && r.type);
@@ -5313,7 +5353,6 @@ adminApplyBtn.onclick = function(){
   meta.labels_view_distance_m = distanceString;
 
   adminEditorStatus.textContent = 'Changes applied locally. Press Save changes to persist them.';
-  applyInitialShareLinkFromUrl();
   updateView(Number(selectBox.value));
 };
 
@@ -5497,16 +5536,18 @@ adminApplyBtn.onclick = function(){
     buildCurrentShareUrl = function(){
       const url = new URL(window.location.href);
       const target = getCurrentShareTarget();
+      // Keep existing project parameters such as ?sheet=... and ?api=..., but refresh HomeView target params.
+      ['hv_b','hv_bi','hv_v','hv_u','building','unit','view','b','u'].forEach(function(k){ url.searchParams.delete(k); });
       url.searchParams.set('hv_b', target.b);
       url.searchParams.set('hv_bi', target.bi);
       url.searchParams.set('hv_v', target.v);
       if(target.u) url.searchParams.set('hv_u', target.u);
-      else url.searchParams.delete('hv_u');
       return url.toString();
     };
     function applyInitialShareLinkFromUrl(){
-      const sp = new URLSearchParams(window.location.search);
-      const hasTarget = sp.has('hv_b') || sp.has('hv_bi') || sp.has('hv_v') || sp.has('hv_u') || sp.has('building') || sp.has('unit') || sp.has('view');
+      let sp;
+      try{ sp = new URLSearchParams(window.location.search || ''); }catch(_){ return false; }
+      const hasTarget = sp.has('hv_b') || sp.has('hv_bi') || sp.has('hv_v') || sp.has('hv_u') || sp.has('building') || sp.has('unit') || sp.has('view') || sp.has('b') || sp.has('u');
       if(!hasTarget) return false;
       const bIdx = findBuildingIndexForShare(sp.get('hv_b') || sp.get('building') || sp.get('b'), sp.get('hv_bi'));
       if(selectBox) selectBox.value = String(bIdx);
@@ -5517,6 +5558,7 @@ adminApplyBtn.onclick = function(){
       if(viewSelect) viewSelect.value = viewValue;
       applyPoiTypeFilters(bIdx);
       syncFutureProjectsChip();
+      setLaunchLoadingText(viewValue && viewValue !== 'exterior' ? 'Opening shared unit...' : 'Opening shared building...');
       return true;
     }
 
@@ -6009,15 +6051,30 @@ function hideUnitMetaUI(){
 
     // init
     setCollapsed(false);
-    rebuildViewOptions(0);
-    setInteriorEntryButtonsVisibility(0, true);
-    updateView(0);
+    setLaunchLoadingText('Opening HomeView...');
+    const usedSharedTarget = applyInitialShareLinkFromUrl();
+    if(!usedSharedTarget){
+      rebuildViewOptions(0);
+      if(selectBox) selectBox.value = '0';
+      if(viewSelect) viewSelect.value = 'exterior';
+    }
+    const initialBuildingIdx = Number(selectBox && selectBox.value || 0);
+    setInteriorEntryButtonsVisibility(initialBuildingIdx, true);
+    try{
+      await updateView(initialBuildingIdx);
+    }finally{
+      hideLaunchLoading();
+    }
     requestSceneRender();
 
     // hide tooltip on camera move
     viewer.camera.changed.addEventListener(()=>{ tip.style.display='none'; });
 
-  }).catch(err=>console.error(err));
+  }).catch(err=>{
+    console.error(err);
+    setLaunchLoadingText('Could not load HomeView. Please refresh or check the project link.');
+    try{ launchLoadingOverlay.style.background = 'rgba(255,255,255,.96)'; launchLoadingOverlay.style.color = '#111'; }catch(_){ }
+  });
 
   // ========== Entities ==========
   async function createBuildingModel(row,viewer){
