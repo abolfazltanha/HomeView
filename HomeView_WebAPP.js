@@ -230,6 +230,14 @@ Promise.all([
   // current view mode (needed for FOV slider)
   let currentMode = 'exterior';
 
+  // Compatibility for older marker-preview code paths.
+  // Some generated editor code still references modelEntities directly.
+  // Keep it as a safe empty/alias array so preview never crashes.
+  var modelEntities = (typeof interiorEntitiesByBuilding !== 'undefined' && interiorEntitiesByBuilding)
+    ? interiorEntitiesByBuilding
+    : [];
+
+
   // ========== Helpers ==========
   function isProbablyCSV(text){ if(!text) return false; const h=text.trim().slice(0,16); if(h.startsWith('<'))return false; const lines=text.split('\n'); return lines.length>0 && lines[0].includes(','); }
   async function fetchCSV(url){ const res=await fetch(url,{cache:'no-store'}); const txt=res.text(); const ct=res.headers.get('content-type')||''; if(!isProbablyCSV(await txt)&&!ct.includes('text/csv')) throw new Error('Invalid CSV'); return await txt; }
@@ -457,6 +465,302 @@ function parseFutureProjects(raw){
   }
 
 
+  // ===== Selected Unit Exterior Reveal =====
+  // Optional Sheet columns per unit:
+  // exterior_marker_offset = "x,y,z"  (local meters from the unit model origin)
+  // exterior_marker_scale  = "x,y,z" or a single number  (box dimensions in meters)
+  let selectedUnitExteriorMarkerEntity = null;
+  let selectedUnitExteriorRevealToken = 0;
+
+  function parseVector3Value(raw, fallback){
+    const fb = fallback || { x:0, y:0, z:0 };
+    if(raw === undefined || raw === null || String(raw).trim() === '') return { x:fb.x, y:fb.y, z:fb.z };
+    const nums = (String(raw).match(/-?\d+(?:\.\d+)?/g) || []).map(Number).filter(Number.isFinite);
+    if(nums.length >= 3) return { x:nums[0], y:nums[1], z:nums[2] };
+    if(nums.length === 1) return { x:nums[0], y:nums[0], z:nums[0] };
+    return { x:fb.x, y:fb.y, z:fb.z };
+  }
+
+  function getExteriorMarkerOffset(meta){
+    return parseVector3Value(firstFilled(
+      meta && meta.exterior_marker_offset,
+      meta && meta.exterior_marker_xyz,
+      meta && meta.unit_exterior_marker_offset,
+      meta && meta.unit_marker_offset,
+      meta && meta.marker_offset
+    ), { x:0, y:0, z:0 });
+  }
+
+  function getExteriorMarkerScale(meta){
+    return parseVector3Value(firstFilled(
+      meta && meta.exterior_marker_scale,
+      meta && meta.exterior_marker_size,
+      meta && meta.unit_exterior_marker_scale,
+      meta && meta.unit_marker_scale,
+      meta && meta.marker_scale
+    ), { x:8, y:3, z:4 });
+  }
+
+  function hasExteriorMarkerConfig(meta){
+    return !!firstFilled(
+      meta && meta.exterior_marker_offset,
+      meta && meta.exterior_marker_xyz,
+      meta && meta.unit_exterior_marker_offset,
+      meta && meta.unit_marker_offset,
+      meta && meta.marker_offset
+    );
+  }
+
+  async function getUnitModelOriginAndFrame(buildingRow, unitRow){
+    const baseLon = toNum(buildingRow.lng), baseLat = toNum(buildingRow.lat), baseH = toNum(buildingRow.height) || 20;
+    const baseSurfaceH = await getSurfaceHeight(baseLon, baseLat);
+    const offE = toNum(unitRow.offset_east_m) || 0;
+    const offN = toNum(unitRow.offset_north_m) || 0;
+    const offU = toNum(unitRow.offset_up_m) || 0;
+    const pos = placeWithEnuOffset(baseLon, baseLat, baseSurfaceH + baseH, offE, offN, offU);
+    const hd = parseFirstNumber(unitRow.heading != null ? unitRow.heading : buildingRow.heading) || 0;
+    const hpr = new Cesium.HeadingPitchRoll(
+      Cesium.Math.toRadians(hd),
+      Cesium.Math.toRadians(toNum(unitRow.pitch) || 0),
+      Cesium.Math.toRadians(toNum(unitRow.roll) || 0)
+    );
+    const frame = Cesium.Transforms.headingPitchRollToFixedFrame(pos, hpr);
+    return { pos: pos, frame: frame, hpr: hpr };
+  }
+
+  function getLoadedInteriorEntityFrame(activeInteriorEntity){
+    try{
+      const anchor = activeInteriorEntity && activeInteriorEntity.anchorEntity ? activeInteriorEntity.anchorEntity : activeInteriorEntity;
+      const now = Cesium.JulianDate.now();
+      const posProp = anchor && anchor.position;
+      const oriProp = anchor && anchor.orientation;
+      const pos = posProp && posProp.getValue ? posProp.getValue(now) : null;
+      const ori = oriProp && oriProp.getValue ? oriProp.getValue(now) : null;
+      if(pos && ori){
+        const rot = Cesium.Matrix3.fromQuaternion(ori, new Cesium.Matrix3());
+        const frame = Cesium.Matrix4.fromRotationTranslation(rot, pos, new Cesium.Matrix4());
+        return { pos: pos, frame: frame };
+      }
+      if(pos){
+        const frame = Cesium.Transforms.eastNorthUpToFixedFrame(pos);
+        return { pos: pos, frame: frame };
+      }
+    }catch(_){ }
+    return null;
+  }
+
+  async function getExteriorMarkerPosition(buildingRow, unitRow, activeInteriorEntity){
+    // Prefer the actual loaded interior model origin. This keeps the green marker tied to the same origin
+    // as the selected 3D unit, instead of accidentally behaving like it is based on the building model.
+    const origin = getLoadedInteriorEntityFrame(activeInteriorEntity) || await getUnitModelOriginAndFrame(buildingRow, unitRow);
+    const off = getExteriorMarkerOffset(unitRow);
+    const local = new Cesium.Cartesian3(off.x || 0, off.y || 0, off.z || 0);
+    return Cesium.Matrix4.multiplyByPoint(origin.frame, local, new Cesium.Cartesian3());
+  }
+
+  function clearSelectedUnitExteriorMarker(options){
+    const preserveRevealToken = !!(options && options.preserveRevealToken);
+    if(!preserveRevealToken) selectedUnitExteriorRevealToken += 1;
+    if(selectedUnitExteriorMarkerEntity){
+      try{ viewer.entities.remove(selectedUnitExteriorMarkerEntity); }catch(_){ }
+      selectedUnitExteriorMarkerEntity = null;
+    }
+    requestSceneRenderBurst(2);
+  }
+
+  async function showSelectedUnitExteriorMarker(buildingRow, unitRow, activeInteriorEntity, options){
+    // Do not invalidate the active reveal token while creating/replacing the marker.
+    // The previous version reset the token here, so the reveal was cancelled immediately.
+    const forceCreate = !!(options && options.forceCreate);
+    clearSelectedUnitExteriorMarker({ preserveRevealToken:true });
+    if(!forceCreate && !hasExteriorMarkerConfig(unitRow)) return null;
+    const markerPos = await getExteriorMarkerPosition(buildingRow, unitRow, activeInteriorEntity);
+    const s = getExteriorMarkerScale(unitRow);
+    const dims = new Cesium.Cartesian3(
+      Math.max(0.4, Math.abs(s.x || 6)),
+      Math.max(0.4, Math.abs(s.y || 2.2)),
+      Math.max(0.4, Math.abs(s.z || 3.2))
+    );
+    selectedUnitExteriorMarkerEntity = viewer.entities.add({
+      name: 'Selected Unit Location',
+      show: true,
+      position: markerPos,
+      box: {
+        dimensions: dims,
+        material: Cesium.Color.LIME.withAlpha(0.50),
+        outline: true,
+        outlineColor: Cesium.Color.WHITE
+      },
+      point: {
+        pixelSize: 14,
+        color: Cesium.Color.LIME,
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 3,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY
+      },
+      label: {
+        text: getItemDisplayName(unitRow, 'Selected Unit'),
+        font: '14px sans-serif',
+        fillColor: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 3,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        showBackground: true,
+        backgroundColor: Cesium.Color.BLACK.withAlpha(0.48),
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+        pixelOffset: new Cesium.Cartesian2(0, -30),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY
+      }
+    });
+    requestSceneRenderBurst(4);
+    return markerPos;
+  }
+
+  function setSelectedUnitExteriorMarkerDimensions(scaleVec){
+    if(!selectedUnitExteriorMarkerEntity || !selectedUnitExteriorMarkerEntity.box) return;
+    const s = scaleVec || { x:6, y:2.2, z:3.2 };
+    selectedUnitExteriorMarkerEntity.box.dimensions = new Cesium.ConstantProperty(new Cesium.Cartesian3(
+      Math.max(0.4, Math.abs(Number(s.x) || 6)),
+      Math.max(0.4, Math.abs(Number(s.y) || 2.2)),
+      Math.max(0.4, Math.abs(Number(s.z) || 3.2))
+    ));
+    requestSceneRenderBurst(3);
+  }
+
+  async function updateSelectedUnitExteriorMarkerPosition(buildingRow, unitRow, activeInteriorEntity){
+    if(!selectedUnitExteriorMarkerEntity || !hasExteriorMarkerConfig(unitRow)) return null;
+    const markerPos = await getExteriorMarkerPosition(buildingRow, unitRow, activeInteriorEntity);
+    selectedUnitExteriorMarkerEntity.position = markerPos;
+    setSelectedUnitExteriorMarkerDimensions(getExteriorMarkerScale(unitRow));
+    requestSceneRenderBurst(3);
+    return markerPos;
+  }
+
+  async function flyToSelectedUnitExteriorMarker(buildingRow, unitRow, activeInteriorEntity){
+    const markerPos = selectedUnitExteriorMarkerEntity
+      ? (selectedUnitExteriorMarkerEntity.position && selectedUnitExteriorMarkerEntity.position.getValue ? selectedUnitExteriorMarkerEntity.position.getValue(Cesium.JulianDate.now()) : null)
+      : await getExteriorMarkerPosition(buildingRow, unitRow, activeInteriorEntity);
+    if(!markerPos) return;
+    const lon = toNum(buildingRow.lng), lat = toNum(buildingRow.lat);
+    const height = Math.max(20, toNum(buildingRow.height) || 20);
+    const scale = Math.max(10, toNum(buildingRow.scale) || 10);
+    const center = await getBuildingSurfacePosition(lon, lat, height);
+    const enu = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+    const worldUp = Cesium.Matrix4.getColumn(enu, 2, new Cesium.Cartesian3());
+    const dist = Math.max(scale * 34, height * 12, 85);
+    const lift = Math.max(6, height * 0.055);
+    const destination = makeRevealCameraPosition(center, markerPos, dist, lift);
+    stopCameraTracking();
+    setExteriorMouseBindings();
+    await flyCameraLookAtTarget(destination, markerPos, IS_MOBILE ? 1.6 : 2.2, worldUp);
+  }
+
+  function makeLookAtOrientation(cameraPosition, targetPosition, fallbackUp){
+    const direction = Cesium.Cartesian3.normalize(
+      Cesium.Cartesian3.subtract(targetPosition, cameraPosition, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3()
+    );
+    let up = Cesium.Cartesian3.clone(fallbackUp || Cesium.Cartesian3.UNIT_Z);
+    const dot = Cesium.Cartesian3.dot(direction, up);
+    const projected = Cesium.Cartesian3.subtract(
+      up,
+      Cesium.Cartesian3.multiplyByScalar(direction, dot, new Cesium.Cartesian3()),
+      new Cesium.Cartesian3()
+    );
+    if(Cesium.Cartesian3.magnitude(projected) > 0.0001){
+      up = Cesium.Cartesian3.normalize(projected, projected);
+    }
+    return { direction: direction, up: up };
+  }
+
+  function makeRevealCameraPosition(center, markerPos, distance, heightLift){
+    const enu = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+    const inv = Cesium.Matrix4.inverseTransformation(enu, new Cesium.Matrix4());
+    const localMarker = Cesium.Matrix4.multiplyByPoint(inv, markerPos, new Cesium.Cartesian3());
+    let horizontal = new Cesium.Cartesian3(localMarker.x || 0, localMarker.y || 0, 0);
+    if(Cesium.Cartesian3.magnitude(horizontal) < 0.001){
+      horizontal = new Cesium.Cartesian3(0, 1, 0);
+    }
+    horizontal = Cesium.Cartesian3.normalize(horizontal, horizontal);
+    const camLocal = new Cesium.Cartesian3(
+      localMarker.x - horizontal.x * distance,
+      localMarker.y - horizontal.y * distance,
+      localMarker.z + (heightLift || 0)
+    );
+    return Cesium.Matrix4.multiplyByPoint(enu, camLocal, new Cesium.Cartesian3());
+  }
+
+  async function flyCameraLookAtTarget(destination, target, duration, fallbackUp){
+    if(!destination || !target) return;
+    const orientation = makeLookAtOrientation(destination, target, fallbackUp);
+    await new Promise(function(resolve){
+      viewer.camera.flyTo({
+        destination: destination,
+        orientation: orientation,
+        duration: Math.max(0.1, Number(duration) || 1.0),
+        complete: resolve,
+        cancel: resolve
+      });
+    });
+    requestSceneRenderBurst(4);
+  }
+
+  
+  async function playSelectedUnitExteriorReveal(bIdx, unitRow, modelLoadPromise){
+    const token = ++selectedUnitExteriorRevealToken;
+    const buildingRow = buildingsData[bIdx] || {};
+    if(!unitRow || !hasExteriorMarkerConfig(unitRow)) return;
+    try{
+      const loadedInteriorEntity = await Promise.resolve(modelLoadPromise).catch(function(){ return null; });
+      if(token !== selectedUnitExteriorRevealToken || !loadedInteriorEntity) return;
+
+      const markerPos = await showSelectedUnitExteriorMarker(buildingRow, unitRow, loadedInteriorEntity);
+      if(token !== selectedUnitExteriorRevealToken || !markerPos) return;
+
+      setCesiumGroundVisible(true);
+      setCameraCollision(true);
+      setExteriorMouseBindings();
+      interiorNav.disable();
+      setJoystickVisible(false);
+
+      const lon = toNum(buildingRow.lng), lat = toNum(buildingRow.lat);
+      const height = Math.max(20, toNum(buildingRow.height) || 20);
+      const scale = Math.max(10, toNum(buildingRow.scale) || 10);
+      const center = await getBuildingSurfacePosition(lon, lat, height);
+      if(token !== selectedUnitExteriorRevealToken) return;
+
+      const enu = Cesium.Transforms.eastNorthUpToFixedFrame(center);
+      const worldUp = Cesium.Matrix4.getColumn(enu, 2, new Cesium.Cartesian3());
+      const revealStartedAt = performance.now();
+      stopCameraTracking();
+
+      // If exterior_marker_camera exists, it owns the reveal path.
+      // No old auto-angle fly, no second zoom stage, no pause between two camera moves.
+      const savedCam = hvParseMarkerCamera(hvGetMarkerCameraTextFromMeta(unitRow));
+      const savedDestination = savedCam ? hvGetCameraPositionFromMarkerCamera(markerPos, savedCam) : null;
+
+      if(savedDestination){
+        await flyCameraLookAtTarget(savedDestination, markerPos, IS_MOBILE ? 3.4 : 4.2, worldUp);
+        if(token !== selectedUnitExteriorRevealToken) return;
+      }else{
+        const farDistance = Math.max(scale * 44, height * 16, 115);
+        const farLift = Math.max(8, height * 0.08);
+        const fallbackDestination = makeRevealCameraPosition(center, markerPos, farDistance, farLift);
+        await flyCameraLookAtTarget(fallbackDestination, markerPos, IS_MOBILE ? 3.2 : 4.0, worldUp);
+        if(token !== selectedUnitExteriorRevealToken) return;
+      }
+
+      const minimumRevealMs = 5000;
+      const elapsedRevealMs = performance.now() - revealStartedAt;
+      if(elapsedRevealMs < minimumRevealMs){
+        await waitMs(minimumRevealMs - elapsedRevealMs);
+      }
+    }catch(err){
+      console.warn('Selected unit exterior reveal skipped:', err);
+    }
+  }
+
+
   function requestSceneRender(){
     try{ viewer.scene.requestRender(); }catch(_){ }
   }
@@ -573,6 +877,167 @@ function parseFutureProjects(raw){
   function stopCameraTracking(){
     try{ viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); }catch(_){ }
   }
+
+  // ===== Unit Location Reveal Camera Helpers =====
+  function hvGetMarkerCameraTextFromMeta(meta){
+    try{
+      return firstFilled(
+        meta && meta.exterior_marker_camera,
+        meta && meta.exterior_reveal_camera,
+        meta && meta.marker_camera,
+        meta && meta.reveal_camera
+      );
+    }catch(_){ return ''; }
+  }
+  function hvParseMarkerCamera(raw){
+    const nums = String(raw || '').match(/-?\d+(?:\.\d+)?/g);
+    if(!nums || nums.length < 3) return null;
+    const headingDeg = Number(nums[0]);
+    const pitchDeg = Number(nums[1]);
+    const distance = Number(nums[2]);
+    if(!Number.isFinite(headingDeg) || !Number.isFinite(pitchDeg) || !Number.isFinite(distance) || distance <= 0) return null;
+    return { headingDeg, pitchDeg, distance };
+  }
+  function hvMarkerCameraToText(cam){
+    if(!cam) return '';
+    return [cam.headingDeg, cam.pitchDeg, cam.distance].map(function(n){
+      const x = Number(n);
+      return Number.isFinite(x) ? String(Math.round(x * 1000) / 1000) : '0';
+    }).join(',');
+  }
+  function hvCaptureCurrentCameraForMarker(markerWorldPosition){
+    try{
+      if(!markerWorldPosition) return null;
+      const camPos = Cesium.Cartesian3.clone(viewer.camera.positionWC);
+      const enu = Cesium.Transforms.eastNorthUpToFixedFrame(markerWorldPosition);
+      const inv = Cesium.Matrix4.inverseTransformation(enu, new Cesium.Matrix4());
+      const local = Cesium.Matrix4.multiplyByPoint(inv, camPos, new Cesium.Cartesian3());
+      const distance = Cesium.Cartesian3.distance(camPos, markerWorldPosition);
+      let headingDeg = Cesium.Math.toDegrees(Math.atan2(local.x, local.y));
+      if(headingDeg < 0) headingDeg += 360;
+      const horizontal = Math.sqrt(local.x * local.x + local.y * local.y);
+      const pitchDeg = Cesium.Math.toDegrees(Math.atan2(local.z, horizontal));
+      return {
+        headingDeg: Math.round(headingDeg * 1000) / 1000,
+        pitchDeg: Math.round(pitchDeg * 1000) / 1000,
+        distance: Math.round(distance * 1000) / 1000
+      };
+    }catch(e){
+      console.warn('Could not capture marker camera:', e);
+      return null;
+    }
+  }
+  function hvGetCameraPositionFromMarkerCamera(markerWorldPosition, markerCamera){
+    try{
+      if(!markerWorldPosition || !markerCamera) return null;
+      const heading = Cesium.Math.toRadians(Number(markerCamera.headingDeg) || 0);
+      const pitch = Cesium.Math.toRadians(Number(markerCamera.pitchDeg) || -12);
+      const distance = Math.max(5, Number(markerCamera.distance) || 80);
+      const horizontal = Math.cos(pitch) * distance;
+      const local = new Cesium.Cartesian3(
+        Math.sin(heading) * horizontal,
+        Math.cos(heading) * horizontal,
+        Math.sin(pitch) * distance
+      );
+      const enu = Cesium.Transforms.eastNorthUpToFixedFrame(markerWorldPosition);
+      return Cesium.Matrix4.multiplyByPoint(enu, local, new Cesium.Cartesian3());
+    }catch(_){ return null; }
+  }
+  function hvLookAtMarkerFromSavedCamera(markerWorldPosition, meta, durationSeconds){
+    try{
+      const savedCam = hvParseMarkerCamera(hvGetMarkerCameraTextFromMeta(meta));
+      if(!savedCam) return false;
+      const dest = hvGetCameraPositionFromMarkerCamera(markerWorldPosition, savedCam);
+      if(!dest) return false;
+      viewer.camera.flyTo({
+        destination: dest,
+        orientation: {
+          direction: Cesium.Cartesian3.normalize(Cesium.Cartesian3.subtract(markerWorldPosition, dest, new Cesium.Cartesian3()), new Cesium.Cartesian3()),
+          up: Cesium.Cartesian3.UNIT_Z
+        },
+        duration: Math.max(0.5, Number(durationSeconds) || 2.5),
+        easingFunction: Cesium.EasingFunction.SINE_IN_OUT
+      });
+      return true;
+    }catch(e){
+      console.warn('Saved marker camera failed:', e);
+      return false;
+    }
+  }
+
+
+  // ===== Marker Editor data compatibility helper =====
+  
+  
+  async function hvTryEnsureInteriorEntityForMarker(buildingIndex, itemIndex){
+    try{
+      if (typeof ensureInteriorEntity === 'function') {
+        return await ensureInteriorEntity(buildingIndex, itemIndex);
+      }
+      if (typeof interiorEntitiesByBuilding !== 'undefined' &&
+          interiorEntitiesByBuilding &&
+          interiorEntitiesByBuilding[buildingIndex] &&
+          interiorEntitiesByBuilding[buildingIndex][itemIndex]) {
+        return interiorEntitiesByBuilding[buildingIndex][itemIndex];
+      }
+    }catch(_){}
+    return null;
+  }
+
+function hvSafeMarkerModelEntities(buildingIndex){
+    try{
+      if (typeof modelEntities !== 'undefined' && modelEntities && Array.isArray(modelEntities[buildingIndex])) return modelEntities[buildingIndex];
+      if (typeof interiorEntitiesByBuilding !== 'undefined' && interiorEntitiesByBuilding && Array.isArray(interiorEntitiesByBuilding[buildingIndex])) return interiorEntitiesByBuilding[buildingIndex];
+    }catch(_){}
+    return [];
+  }
+
+function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
+    try{
+      var lists = [];
+      if (typeof markerTargetItemsByBuilding !== 'undefined' && markerTargetItemsByBuilding && markerTargetItemsByBuilding[buildingIndex]) lists.push(markerTargetItemsByBuilding[buildingIndex]);
+      if (typeof interiorMetaByBuilding !== 'undefined' && interiorMetaByBuilding && interiorMetaByBuilding[buildingIndex]) lists.push(interiorMetaByBuilding[buildingIndex]);
+      if (typeof unitsByBuilding !== 'undefined' && unitsByBuilding && unitsByBuilding[buildingIndex]) lists.push(unitsByBuilding[buildingIndex]);
+      if (typeof itemsByBuilding !== 'undefined' && itemsByBuilding && itemsByBuilding[buildingIndex]) lists.push(itemsByBuilding[buildingIndex]);
+      if (typeof interiorsByBuilding !== 'undefined' && interiorsByBuilding && interiorsByBuilding[buildingIndex]) lists.push(interiorsByBuilding[buildingIndex]);
+      if (typeof buildingItemsByIndex !== 'undefined' && buildingItemsByIndex && buildingItemsByIndex[buildingIndex]) lists.push(buildingItemsByIndex[buildingIndex]);
+      if (typeof viewItemsByBuilding !== 'undefined' && viewItemsByBuilding && viewItemsByBuilding[buildingIndex]) lists.push(viewItemsByBuilding[buildingIndex]);
+      for (var i=0;i<lists.length;i++){
+        if (Array.isArray(lists[i]) && lists[i].length) return lists[i];
+      }
+
+  // ===== Marker Editor entity compatibility helper =====
+  function hvGetModelEntityListForBuilding(buildingIndex){
+    try{
+      var candidates = [];
+      if (typeof modelEntities !== 'undefined' && modelEntities && hvGetModelEntityListForBuilding(buildingIndex)) candidates.push(hvGetModelEntityListForBuilding(buildingIndex));
+      if (typeof interiorEntitiesByBuilding !== 'undefined' && interiorEntitiesByBuilding && interiorEntitiesByBuilding[buildingIndex]) candidates.push(interiorEntitiesByBuilding[buildingIndex]);
+      if (typeof unitEntitiesByBuilding !== 'undefined' && unitEntitiesByBuilding && unitEntitiesByBuilding[buildingIndex]) candidates.push(unitEntitiesByBuilding[buildingIndex]);
+      if (typeof entitiesByBuilding !== 'undefined' && entitiesByBuilding && entitiesByBuilding[buildingIndex]) candidates.push(entitiesByBuilding[buildingIndex]);
+      for (var i=0;i<candidates.length;i++){
+        if (Array.isArray(candidates[i])) return candidates[i];
+      }
+    }catch(_){}
+    return [];
+  }
+
+    }catch(_){}
+    try{
+      var opts = [];
+      if (typeof viewSelect !== 'undefined' && viewSelect && viewSelect.options){
+        for (var j=0;j<viewSelect.options.length;j++){
+          var opt = viewSelect.options[j];
+          if (!opt) continue;
+          var txt = String(opt.textContent || opt.text || '').trim();
+          if (!txt || /building view/i.test(txt)) continue;
+          opts.push({ unit_name: txt, name: txt, __optionIndex: j, __fromViewSelect: true });
+        }
+      }
+      return opts;
+    }catch(_){}
+    return [];
+  }
+
 
   // ========== UI (left panel) ==========
   const chartDiv = document.createElement('div');
@@ -1016,6 +1481,7 @@ function renderChipSection(section, items){
       <div style="display:flex;gap:6px;flex-wrap:wrap;min-width:0">
         <button id="pickLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">Pick label position</button>
         <button id="newLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer">New label</button>
+        <button id="saveLabelsBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer;font-weight:700">Save labels</button>
         <button id="deleteLabelBtn" class="ui-btn" style="border-radius:8px;padding:6px 8px;font-size:12px;cursor:pointer;border-color:#ffcdd2;color:#b71c1c">Delete selected</button>
       </div>
       <div id="labelEditorStatus" style="font-size:12px;color:#555">No label selected</div>
@@ -1043,12 +1509,573 @@ function renderChipSection(section, items){
   labelActionValueInput.parentElement.appendChild(labelCurrentSceneHint);
   const pickLabelBtn = labelToolsCard.querySelector('#pickLabelBtn');
   const newLabelBtn = labelToolsCard.querySelector('#newLabelBtn');
+  const saveLabelsBtn = labelToolsCard.querySelector('#saveLabelsBtn');
   const deleteLabelBtn = labelToolsCard.querySelector('#deleteLabelBtn');
   const labelEditorStatus = labelToolsCard.querySelector('#labelEditorStatus');
   const labelList = labelToolsCard.querySelector('#labelList');
   const labelDistanceRange = labelToolsCard.querySelector('#labelDistanceRange');
   const labelDistanceValue = labelToolsCard.querySelector('#labelDistanceValue');
   const labelsExportBox = labelToolsCard.querySelector('#labelsExportBox');
+
+  const unitMarkerTunerCard = document.createElement('div');
+  unitMarkerTunerCard.className = 'ui-card';
+  unitMarkerTunerCard.style.cssText = 'border-radius:12px;padding:10px;display:none;overflow:hidden';
+  unitMarkerTunerCard.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <div style="font-weight:700">Unit Location Marker</div>
+      <button id="markerCopyBtn" class="ui-btn" style="border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer">Copy for Sheet</button>
+    </div>
+    <div style="font-size:12px;line-height:1.45;color:#555;margin-bottom:8px">Open this from Building View, choose any unit or amenity in this building, then adjust the green box live with the Offset and Size fields, then copy the values into the Sheet row.</div>
+    <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;margin-bottom:8px">Target Unit / Amenity
+      <select id="markerTargetSelect" class="ui-select" style="padding:8px;border-radius:8px;width:100%;box-sizing:border-box"></select>
+    </label>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:8px">
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Offset X<input id="markerOffX" class="ui-input" type="number" step="0.5" style="padding:7px;border-radius:8px"></label>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Offset Y<input id="markerOffY" class="ui-input" type="number" step="0.5" style="padding:7px;border-radius:8px"></label>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Offset Z<input id="markerOffZ" class="ui-input" type="number" step="0.5" style="padding:7px;border-radius:8px"></label>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Size X<input id="markerScaleX" class="ui-input" type="number" step="0.5" min="0.4" style="padding:7px;border-radius:8px"></label>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Size Y<input id="markerScaleY" class="ui-input" type="number" step="0.5" min="0.4" style="padding:7px;border-radius:8px"></label>
+      <label style="display:flex;flex-direction:column;font-size:12px;gap:4px">Size Z<input id="markerScaleZ" class="ui-input" type="number" step="0.5" min="0.4" style="padding:7px;border-radius:8px"></label>
+    </div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:8px"><label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Reveal Camera<input id="markerCameraInput" class="ui-input" type="text" placeholder="heading,pitch,distance" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0"></label><button id="markerUseCurrentCameraBtn" class="ui-btn" style="border-radius:8px;padding:8px 10px;font-size:12px;cursor:pointer">Use Current Camera</button></div><textarea id="markerSheetOutput" class="ui-input" rows="2" readonly style="margin-top:8px;width:100%;box-sizing:border-box;border-radius:8px;padding:8px;font-size:12px"></textarea>
+    <div id="markerTunerStatus" style="font-size:12px;color:#555;margin-top:6px">Ready.</div>`;
+  panelBody.appendChild(unitMarkerTunerCard);
+  const markerOffX = unitMarkerTunerCard.querySelector('#markerOffX');
+  const markerOffY = unitMarkerTunerCard.querySelector('#markerOffY');
+  const markerOffZ = unitMarkerTunerCard.querySelector('#markerOffZ');
+  const markerScaleX = unitMarkerTunerCard.querySelector('#markerScaleX');
+  const markerScaleY = unitMarkerTunerCard.querySelector('#markerScaleY');
+  const markerScaleZ = unitMarkerTunerCard.querySelector('#markerScaleZ');
+  const markerEditorToggleBtn = unitMarkerTunerCard.querySelector('#markerEditorToggleBtn');
+  const markerPreviewBtn = unitMarkerTunerCard.querySelector('#markerPreviewBtn');
+  const markerViewBtn = unitMarkerTunerCard.querySelector('#markerViewBtn');
+  const markerHideBtn = unitMarkerTunerCard.querySelector('#markerHideBtn');
+  const markerCopyBtn = unitMarkerTunerCard.querySelector('#markerCopyBtn');
+  const markerSheetOutput = unitMarkerTunerCard.querySelector('#markerSheetOutput');
+
+  const markerOffsetXInput = markerOffX;
+  const markerOffsetYInput = markerOffY;
+  const markerOffsetZInput = markerOffZ;
+  const markerSizeXInput = markerScaleX;
+  const markerSizeYInput = markerScaleY;
+  const markerSizeZInput = markerScaleZ;
+
+
+  const markerCameraInput = document.getElementById('markerCameraInput') || (markerEditorPanel ? markerEditorPanel.querySelector('#markerCameraInput') : null);
+  const markerUseCurrentCameraBtn = document.getElementById('markerUseCurrentCameraBtn') || (markerEditorPanel ? markerEditorPanel.querySelector('#markerUseCurrentCameraBtn') : null);
+  let activeMarkerEditorWorldPosition = null;
+
+  
+  function hvApplyMarkerCameraFromSelectedMeta(meta){
+    try{
+      if(markerCameraInput){
+        markerCameraInput.value = hvGetMarkerCameraTextFromMeta(meta) || '';
+        hvUpdateMarkerSheetOutputWithCamera();
+      }
+    }catch(_){}
+  }
+function hvUpdateMarkerSheetOutputWithCamera(){
+    try{
+      if(!markerSheetOutput) return;
+      var off = [
+        markerOffsetXInput ? markerOffsetXInput.value : '0',
+        markerOffsetYInput ? markerOffsetYInput.value : '0',
+        markerOffsetZInput ? markerOffsetZInput.value : '0'
+      ].join(',');
+      var size = [
+        markerSizeXInput ? markerSizeXInput.value : '1',
+        markerSizeYInput ? markerSizeYInput.value : '1',
+        markerSizeZInput ? markerSizeZInput.value : '1'
+      ].join(',');
+      var cam = markerCameraInput && markerCameraInput.value ? String(markerCameraInput.value).trim() : '';
+      markerSheetOutput.value = 'exterior_marker_offset: ' + off + '\nexterior_marker_scale: ' + size + (cam ? ('\nexterior_marker_camera: ' + cam) : '');
+    }catch(_){}
+  }
+  function hvPatchMarkerOutputListeners(){
+    try{
+      [markerOffsetXInput,markerOffsetYInput,markerOffsetZInput,markerSizeXInput,markerSizeYInput,markerSizeZInput,markerCameraInput].forEach(function(el){
+        if(el && !el.__hvMarkerCameraPatched){
+          el.__hvMarkerCameraPatched = true;
+          el.addEventListener('input', function(){ setTimeout(hvUpdateMarkerSheetOutputWithCamera, 0); });
+        }
+      });
+      if(markerUseCurrentCameraBtn && !markerUseCurrentCameraBtn.__hvMarkerCameraPatched){
+        markerUseCurrentCameraBtn.__hvMarkerCameraPatched = true;
+        markerUseCurrentCameraBtn.addEventListener('click', function(){
+          var cam = hvCaptureCurrentCameraForMarker(activeMarkerEditorWorldPosition);
+          if(cam && markerCameraInput){
+            markerCameraInput.value = hvMarkerCameraToText(cam);
+            hvUpdateMarkerSheetOutputWithCamera();
+            try{ if(markerTunerStatus) markerTunerStatus.textContent = 'Reveal camera captured. Copy values into the Sheet.'; }catch(_){}
+          }else{
+            try{ if(markerTunerStatus) markerTunerStatus.textContent = 'Marker position not ready. Select a target first.'; }catch(_){}
+          }
+        });
+      }
+    }catch(_){}
+  }
+  hvPatchMarkerOutputListeners();
+
+  function hvGetActiveMarkerEditorWorldPositionSafe(){
+    try{
+      if(activeMarkerEditorWorldPosition) return activeMarkerEditorWorldPosition;
+    }catch(_){}
+    try{
+      if(typeof selectedUnitExteriorMarkerEntity !== 'undefined' && selectedUnitExteriorMarkerEntity && selectedUnitExteriorMarkerEntity.position){
+        const p = selectedUnitExteriorMarkerEntity.position.getValue ? selectedUnitExteriorMarkerEntity.position.getValue(Cesium.JulianDate.now()) : selectedUnitExteriorMarkerEntity.position;
+        if(p){ activeMarkerEditorWorldPosition = p; return p; }
+      }
+    }catch(_){}
+    try{
+      const ctx = getCurrentMarkerTunerContext ? getCurrentMarkerTunerContext() : null;
+      if(ctx){
+        const off = getMarkerTunerValues().offset;
+        const lon = toNum(ctx.row.lng), lat = toNum(ctx.row.lat);
+        const h = toNum(ctx.row.height) || 0;
+        if(Number.isFinite(lon) && Number.isFinite(lat)){
+          const p = placeWithEnuOffset(lon, lat, h, off.x, off.y, off.z);
+          activeMarkerEditorWorldPosition = p;
+          return p;
+        }
+      }
+    }catch(_){}
+    return null;
+  }
+  function hvInstallUseCurrentCameraButtonRobust(){
+    try{
+      if(!markerUseCurrentCameraBtn || !markerCameraInput) return;
+      markerUseCurrentCameraBtn.onclick = function(evt){
+        try{
+          if(evt){ evt.preventDefault(); evt.stopPropagation(); }
+          const pos = hvGetActiveMarkerEditorWorldPositionSafe();
+          const cam = hvCaptureCurrentCameraForMarker(pos);
+          if(cam){
+            markerCameraInput.value = hvMarkerCameraToText(cam);
+            hvUpdateMarkerSheetOutputWithCamera();
+            try{ markerTunerStatus.textContent = 'Reveal camera captured. Copy values into the Sheet.'; }catch(_){}
+          }else{
+            try{ markerTunerStatus.textContent = 'Marker is not ready. Select a target first.'; }catch(_){}
+            console.warn('Use Current Camera failed: no marker position');
+          }
+        }catch(e){
+          console.warn('Use Current Camera failed:', e);
+        }
+        return false;
+      };
+    }catch(e){ console.warn('Could not install camera capture button:', e); }
+  }
+
+  hvInstallUseCurrentCameraButtonRobust();
+
+
+  const markerTunerStatus = unitMarkerTunerCard.querySelector('#markerTunerStatus');
+  const markerTargetSelect = unitMarkerTunerCard.querySelector('#markerTargetSelect');
+
+  // Label editor state/list refresh are initialized later with the 3D label system.
+  // They must exist before floating admin editor buttons query them during startup.
+  let labelEditorState = null;
+  let refreshLabelListUI = function(){};
+
+  // ===== Floating editor panels (admin-only) =====
+  // Keep heavy editor tools out of the main Controls panel. They behave like the Cinematic Camera Tool:
+  // a small admin button opens a scrollable popup, while the main HomeView controls stay clean.
+  let descriptionEditorPanelOpen = false;
+  let labelEditorPanelOpen = false;
+  let markerEditorPanelOpen = false;
+
+  function makeAdminFloatingButton(label, title, rightPx){
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ui-btn hv-chrome-anim';
+    btn.textContent = label;
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+    btn.style.cssText = 'position:fixed;right:' + rightPx + 'px;bottom:16px;width:44px;height:44px;border-radius:999px;box-shadow:0 2px 10px rgba(0,0,0,.18);z-index:2125;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:18px;line-height:1;';
+    document.body.appendChild(btn);
+    return btn;
+  }
+
+  const markerEditorBtn = makeAdminFloatingButton('▣', 'Unit / Amenity Location Marker Editor', 118);
+  const labelsEditorBtn = makeAdminFloatingButton('🏷', '3D Labels Editor', 168);
+  const descriptionEditorBtn = makeAdminFloatingButton('✎', 'Description / Data Editor', 218);
+
+  function styleAsFloatingEditorPanel(el, widthPx, rightPx){
+    if(!el) return;
+    el.style.cssText = 'position:fixed;right:' + rightPx + 'px;bottom:68px;width:' + widthPx + 'px;max-width:92vw;max-height:74vh;overflow:auto;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.20);z-index:2360;padding:12px;font-family:sans-serif;font-size:14px;display:none;flex-direction:column;gap:8px;';
+    try{ document.body.appendChild(el); }catch(_){ }
+  }
+
+  styleAsFloatingEditorPanel(unitMarkerTunerCard, 390, 118);
+  styleAsFloatingEditorPanel(labelToolsCard, 360, 168);
+  styleAsFloatingEditorPanel(adminUnitEditorCard, 380, 218);
+
+  function closeAdminEditorPanels(exceptName){
+    if(exceptName !== 'description'){ descriptionEditorPanelOpen = false; try{ adminUnitEditorCard.style.display = 'none'; }catch(_){ } }
+    if(exceptName !== 'labels'){ labelEditorPanelOpen = false; try{ labelToolsCard.style.display = 'none'; }catch(_){ } }
+    if(exceptName !== 'marker'){
+      markerEditorPanelOpen = false;
+      try{ unitMarkerTunerCard.style.display = 'none'; }catch(_){ }
+      try{ if(markerEditorModeActive) exitMarkerEditorMode(); }catch(_){ }
+    }
+  }
+
+  function updateAdminEditorButtonsVisibility(){
+    const admin = isEditorAdmin();
+    const sel = labelEditorState && labelEditorState.currentSelection ? labelEditorState.currentSelection : null;
+    const usable = !!sel && !sel.isExterior;
+    descriptionEditorBtn.style.display = (admin && usable) ? 'flex' : 'none';
+    labelsEditorBtn.style.display = (admin && usable) ? 'flex' : 'none';
+    markerEditorBtn.style.display = admin ? 'flex' : 'none';
+    if(!admin){ closeAdminEditorPanels(); }
+    if(!usable){
+      descriptionEditorPanelOpen = false;
+      labelEditorPanelOpen = false;
+      try{ adminUnitEditorCard.style.display = 'none'; labelToolsCard.style.display = 'none'; }catch(_){ }
+    }
+  }
+
+  descriptionEditorBtn.onclick = function(){
+    if(!isEditorAdmin()) return;
+    const sel = labelEditorState && labelEditorState.currentSelection ? labelEditorState.currentSelection : null;
+    if(!sel || sel.isExterior){ showShareToast('Select a unit or amenity first'); return; }
+    descriptionEditorPanelOpen = !descriptionEditorPanelOpen;
+    closeAdminEditorPanels(descriptionEditorPanelOpen ? 'description' : '');
+    adminUnitEditorCard.style.display = descriptionEditorPanelOpen ? 'flex' : 'none';
+    markUiActive();
+  };
+
+  labelsEditorBtn.onclick = function(){
+    if(!isEditorAdmin()) return;
+    const sel = labelEditorState && labelEditorState.currentSelection ? labelEditorState.currentSelection : null;
+    if(!sel || sel.isExterior){ showShareToast('Select a unit or amenity first'); return; }
+    labelEditorPanelOpen = !labelEditorPanelOpen;
+    closeAdminEditorPanels(labelEditorPanelOpen ? 'labels' : '');
+    labelToolsCard.style.display = labelEditorPanelOpen ? 'flex' : 'none';
+    if(labelEditorPanelOpen && labelEditorState){ labelEditorState.editMode = true; labelEditorBody.style.display = 'flex'; editLabelsBtn.textContent = 'Close editor'; refreshLabelListUI(); }
+    markUiActive();
+  };
+
+  markerEditorBtn.onclick = function(){
+    if(!isEditorAdmin()) return;
+    markerEditorPanelOpen = !markerEditorPanelOpen;
+    closeAdminEditorPanels(markerEditorPanelOpen ? 'marker' : '');
+    unitMarkerTunerCard.style.display = markerEditorPanelOpen ? 'flex' : 'none';
+    if(markerEditorPanelOpen){
+      try{ rebuildMarkerTargetListForCurrentBuilding(); hvInstallUseCurrentCameraButtonRobust(); }catch(_){ }
+      setTimeout(function(){ try{ rebuildMarkerTargetListForCurrentBuilding(); previewMarkerFromTuner(true); }catch(_){ } }, 250);
+      setTimeout(function(){ try{ rebuildMarkerTargetListForCurrentBuilding(); previewMarkerFromTuner(false); }catch(_){ } }, 900);
+      try{ markerEditorModeActive = true; setMarkerEditorButtonState(); enterMarkerEditorCameraMode(); }catch(_){ }
+    }else{
+      try{ clearSelectedUnitExteriorMarker(); }catch(_){ }
+      try{ if(markerEditorModeActive) exitMarkerEditorMode(); }catch(_){ }
+    }
+    markUiActive();
+  };
+
+  let markerEditorModeActive = false;
+  let markerEditorContext = null;
+  // Stable cache for marker editor targets. This avoids relying on the current View/Unit selection
+  // and lets the marker editor work from Building View as soon as sheet data is ready.
+  let markerTargetItemsByBuilding = [];
+
+  function isMarkerEditableKind(kind){
+    return kind === 'unit' || kind === 'amenity';
+  }
+
+  function setMarkerEditorButtonState(){
+    // Marker Editor is now always an outside-building editor while its popup is open.
+    try{
+      if(markerEditorToggleBtn){
+        markerEditorToggleBtn.textContent = markerEditorModeActive ? 'Exit editor' : 'Edit outside';
+        markerEditorToggleBtn.style.fontWeight = markerEditorModeActive ? '800' : '400';
+      }
+    }catch(_){ }
+  }
+
+  function enterMarkerEditorCameraMode(){
+    try{
+      stopCameraTracking();
+      setInteriorMouseBindings();
+      interiorNav.enable();
+      setJoystickVisible(true);
+      setCameraCollision(false);
+      currentMode = 'exterior';
+    }catch(_){ }
+  }
+
+  function exitMarkerEditorCameraMode(){
+    try{
+      setCameraCollision(true);
+      if(currentMode === 'exterior'){
+        setExteriorMouseBindings();
+        interiorNav.disable();
+        setJoystickVisible(false);
+      }
+    }catch(_){ }
+  }
+
+  async function enterMarkerEditorMode(flyToMarker){
+    const ctxInfo = applyMarkerTunerValuesToMeta();
+    if(!ctxInfo){ markerTunerStatus.textContent = 'Select a unit or amenity first.'; return; }
+    markerEditorModeActive = true;
+    markerEditorContext = ctxInfo;
+    setMarkerEditorButtonState();
+    markerTunerStatus.textContent = 'Marker editor is active. You can move around outside and adjust the green box live.';
+    try{
+      setCesiumGroundVisible(true);
+      modelEntities.forEach(function(ent,i){ if(ent) ent.show = (i === ctxInfo.bIdx); });
+      (interiorEntitiesByBuilding[ctxInfo.bIdx] || []).forEach(function(ent){ try{ if(ent) ent.show = false; }catch(_){ } });
+      const ent = getCurrentInteriorEntityForMarker(ctxInfo) || await hvTryEnsureInteriorEntityForMarker(ctxInfo.bIdx, ctxInfo.itemIdx);
+      try{ if(ent) ent.show = false; }catch(_){ }
+      activeMarkerEditorWorldPosition = await showSelectedUnitExteriorMarker(ctxInfo.row, ctxInfo.meta, ent, { forceCreate:true });
+      enterMarkerEditorCameraMode();
+      if(flyToMarker) await flyToSelectedUnitExteriorMarker(ctxInfo.row, ctxInfo.meta, ent);
+    }catch(err){
+      markerTunerStatus.textContent = 'Could not enter marker editor.';
+      console.warn('Marker editor failed:', err);
+    }
+  }
+
+  function exitMarkerEditorMode(){
+    markerEditorModeActive = false;
+    markerEditorContext = null;
+    setMarkerEditorButtonState();
+    markerTunerStatus.textContent = 'Marker editor closed.';
+    exitMarkerEditorCameraMode();
+  }
+
+  function formatMarkerNumber(v){
+    const n = Number(v);
+    if(!Number.isFinite(n)) return '0';
+    return (Math.round(n * 100) / 100).toString();
+  }
+  function getMarkerTunerValues(){
+    return {
+      offset:{ x:Number(markerOffX.value)||0, y:Number(markerOffY.value)||0, z:Number(markerOffZ.value)||0 },
+      scale:{ x:Math.max(0.4, Number(markerScaleX.value)||8), y:Math.max(0.4, Number(markerScaleY.value)||3), z:Math.max(0.4, Number(markerScaleZ.value)||4) }
+    };
+  }
+  function updateMarkerSheetOutput(){
+    const v = getMarkerTunerValues();
+    const offset = [v.offset.x, v.offset.y, v.offset.z].map(formatMarkerNumber).join(',');
+    const scale = [v.scale.x, v.scale.y, v.scale.z].map(formatMarkerNumber).join(',');
+    hvUpdateMarkerSheetOutputWithCamera();
+    return { offset, scale, camera:(markerCameraInput && markerCameraInput.value ? markerCameraInput.value : ''), values:v };
+  }
+  function setMarkerTunerFromMeta(meta){
+    const off = getExteriorMarkerOffset(meta || {});
+    const sc = getExteriorMarkerScale(meta || {});
+    markerOffX.value = formatMarkerNumber(off.x);
+    markerOffY.value = formatMarkerNumber(off.y);
+    markerOffZ.value = formatMarkerNumber(off.z);
+    markerScaleX.value = formatMarkerNumber(sc.x);
+    markerScaleY.value = formatMarkerNumber(sc.y);
+    markerScaleZ.value = formatMarkerNumber(sc.z);
+    try{ if(markerCameraInput) markerCameraInput.value = hvGetMarkerCameraTextFromMeta(meta || {}) || ''; }catch(_){}
+    updateMarkerSheetOutput();
+  }
+  function getCurrentMarkerTunerContext(){
+    const bIdx = Number(selectBox.value || 0);
+    let sourceValue = '';
+    try{ sourceValue = markerTargetSelect && markerTargetSelect.value ? markerTargetSelect.value : ''; }catch(_){ }
+    if(!sourceValue) return null;
+    const parts = String(sourceValue || 'exterior:0').split(':');
+    const kind = parts[0] || 'exterior';
+    const itemIdx = Number(parts[1] || 0);
+    const targets = hvGetMarkerEditorTargetsForBuilding(bIdx);
+    let meta = targets[itemIdx] || null;
+    let resolvedIdx = itemIdx;
+    if(!meta && markerTargetSelect && markerTargetSelect.selectedIndex >= 0){
+      const altIdx = markerTargetSelect.selectedIndex;
+      if(targets[altIdx]){ meta = targets[altIdx]; resolvedIdx = altIdx; }
+    }
+    const row = buildingsData[bIdx] || null;
+    if(!row || !meta || !isMarkerEditableKind(kind)) return null;
+    return { bIdx, kind, itemIdx: resolvedIdx, meta, row };
+  }
+
+  function rebuildMarkerTargetListForCurrentBuilding(){
+    if(!markerTargetSelect) return;
+    const bIdx = Number(selectBox && selectBox.value || 0);
+    let list = [];
+    try{
+      list = (markerTargetItemsByBuilding && markerTargetItemsByBuilding[bIdx]) ? markerTargetItemsByBuilding[bIdx] : [];
+    }catch(_){ list = []; }
+    // Fallbacks for older flows: use the View/Unit dropdown and then the live interior meta array if available.
+    if((!list || !list.length)){
+      try{ list = (interiorMetaByBuilding && interiorMetaByBuilding[bIdx]) ? interiorMetaByBuilding[bIdx] : []; }catch(_){ list = []; }
+    }
+    const prev = markerTargetSelect.value;
+    markerTargetSelect.innerHTML = '';
+
+    function addTargetOption(kind, idx, item){
+      if(!item || !isMarkerEditableKind(kind)) return;
+      const opt = document.createElement('option');
+      opt.value = kind + ':' + idx;
+      const fallback = (kind === 'amenity' ? 'Amenity #' : 'Unit #') + (idx + 1);
+      opt.textContent = (kind === 'amenity' ? 'Amenity — ' : 'Unit — ') + getItemDisplayName(item, fallback);
+      markerTargetSelect.appendChild(opt);
+    }
+
+    // Prefer the already-built View / Unit dropdown, because it reflects exactly what HomeView can open.
+    // This makes the marker editor available from Building View before any unit has been entered.
+    try{
+      Array.from(viewSelect.options || []).forEach(function(opt){
+        const value = String(opt.value || '');
+        if(!value || value === 'exterior') return;
+        const parts = value.split(':');
+        const rawKind = parts[0] || '';
+        const idx = Number(parts[1] || 0);
+        if(!Number.isFinite(idx)) return;
+        if(rawKind === 'panorama') return;
+        const item = list[idx] || null;
+        if(!item) return;
+        const kind = rawKind === 'amenity' ? 'amenity' : 'unit';
+        addTargetOption(kind, idx, item);
+      });
+    }catch(_){ }
+
+    // Fallback if the dropdown was not ready yet.
+    if(!markerTargetSelect.options.length){
+      list.forEach(function(item, idx){
+        if(!item || isPanoramaRow(item)) return;
+        const kind = isAmenityRow(item) ? 'amenity' : 'unit';
+        addTargetOption(kind, idx, item);
+      });
+    }
+
+    if(prev){
+      for(let i=0;i<markerTargetSelect.options.length;i++){
+        if(markerTargetSelect.options[i].value === prev){ markerTargetSelect.value = prev; break; }
+      }
+    }
+    if(!markerTargetSelect.value && markerTargetSelect.options.length) markerTargetSelect.selectedIndex = 0;
+
+    if(!markerTargetSelect.options.length){
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No units or amenities found yet — wait a moment or check building_key';
+      markerTargetSelect.appendChild(opt);
+      markerTargetSelect.disabled = true;
+      markerTunerStatus.textContent = 'No unit/amenity rows found for this building. Check that Interior building_key matches the Buildings sheet name/key.';
+      // If the panel was opened before CSV processing finished, retry shortly.
+      setTimeout(function(){ try{ rebuildMarkerTargetListForCurrentBuilding(); }catch(_){ } }, 800);
+    }else{
+      markerTargetSelect.disabled = false;
+      markerTunerStatus.textContent = 'Choose a unit or amenity, then edit its marker.';
+    }
+
+    const ctx = getCurrentMarkerTunerContext();
+    if(ctx){
+      setMarkerTunerFromMeta(ctx.meta);
+      if(markerEditorPanelOpen){
+        try{ setTimeout(function(){ previewMarkerFromTuner(false); }, 120); }catch(_){ }
+      }
+    }
+    updateMarkerSheetOutput();
+  }
+
+  function autoPreviewMarkerEditorTarget(flyToMarker){
+    if(!markerEditorPanelOpen) return;
+    if(!markerTargetSelect || markerTargetSelect.disabled || !markerTargetSelect.value) return;
+    if(markerPreviewTimer) clearTimeout(markerPreviewTimer);
+    markerPreviewTimer = setTimeout(function(){
+      try{ previewMarkerFromTuner(!!flyToMarker); }catch(_){ }
+    }, 120);
+  }
+  function applyMarkerTunerValuesToMeta(){
+    const ctx = getCurrentMarkerTunerContext();
+    if(!ctx) return null;
+    const out = updateMarkerSheetOutput();
+    ctx.meta.exterior_marker_offset = out.offset;
+    ctx.meta.exterior_marker_scale = out.scale;
+    return Object.assign(ctx, out);
+  }
+  function getCurrentInteriorEntityForMarker(ctx){
+    try{ return (interiorEntitiesByBuilding[ctx.bIdx] || [])[ctx.itemIdx] || null; }catch(_){ return null; }
+  }
+  async function previewMarkerFromTuner(flyToMarker){
+    const ctxInfo = applyMarkerTunerValuesToMeta();
+    if(!ctxInfo){ markerTunerStatus.textContent = 'Select a unit or amenity first.'; return; }
+    markerTunerStatus.textContent = 'Updating marker...';
+    try{
+      setCesiumGroundVisible(true);
+      modelEntities.forEach(function(ent,i){ if(ent) ent.show = (i === ctxInfo.bIdx); });
+      markerEditorModeActive = true;
+      setMarkerEditorButtonState();
+      enterMarkerEditorCameraMode();
+      let ent = getCurrentInteriorEntityForMarker(ctxInfo);
+      if(!ent){
+        try{ ent = await hvTryEnsureInteriorEntityForMarker(ctxInfo.bIdx, ctxInfo.itemIdx); }
+        catch(loadErr){ console.warn('Marker editor could not load target model; using fallback origin.', loadErr); ent = null; }
+      }
+      try{ if(ent) ent.show = false; }catch(_){ }
+      const markerPos = await showSelectedUnitExteriorMarker(ctxInfo.row, ctxInfo.meta, ent, { forceCreate:true });
+      activeMarkerEditorWorldPosition = markerPos;
+      if(!markerPos){ markerTunerStatus.textContent = 'Could not create marker for this target.'; return; }
+      if(flyToMarker) await flyToSelectedUnitExteriorMarker(ctxInfo.row, ctxInfo.meta, ent);
+      markerTunerStatus.textContent = 'Marker visible. Adjust Offset and Size, then Copy for Sheet.';
+    }catch(err){
+      markerTunerStatus.textContent = 'Could not preview marker.';
+      console.warn('Marker tuner preview failed:', err);
+    }
+  }
+  let markerPreviewTimer = null;
+  function scheduleMarkerPreview(){
+    updateMarkerSheetOutput();
+    if(markerPreviewTimer) clearTimeout(markerPreviewTimer);
+    markerPreviewTimer = setTimeout(function(){ previewMarkerFromTuner(false); }, 120);
+  }
+  [markerOffX, markerOffY, markerOffZ, markerScaleX, markerScaleY, markerScaleZ, markerCameraInput].forEach(function(inp){
+    inp.addEventListener('input', scheduleMarkerPreview);
+  });
+  unitMarkerTunerCard.querySelectorAll('[data-marker-nudge]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      const parts = String(btn.getAttribute('data-marker-nudge') || '').split(':');
+      const axis = parts[0];
+      const dir = Number(parts[1]) || 0;
+      const step = 0.5;
+      const map = { x:markerOffX, y:markerOffY, z:markerOffZ };
+      if(map[axis]) map[axis].value = formatMarkerNumber((Number(map[axis].value)||0) + dir * step);
+      scheduleMarkerPreview();
+    });
+  });
+  unitMarkerTunerCard.querySelectorAll('[data-marker-size]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      const parts = String(btn.getAttribute('data-marker-size') || '').split(':');
+      const axis = parts[0];
+      const dir = Number(parts[1]) || 0;
+      const step = 0.5;
+      const map = { x:markerScaleX, y:markerScaleY, z:markerScaleZ };
+      if(map[axis]) map[axis].value = formatMarkerNumber(Math.max(0.4, (Number(map[axis].value)||1) + dir * step));
+      scheduleMarkerPreview();
+    });
+  });
+  if(markerTargetSelect){
+    markerTargetSelect.addEventListener('change', function(){
+      const ctx = getCurrentMarkerTunerContext();
+      if(ctx) setMarkerTunerFromMeta(ctx.meta); hvInstallUseCurrentCameraButtonRobust();
+      // In marker editing mode, selecting a target must immediately create/show its green cube.
+      previewMarkerFromTuner(true);
+    });
+  }
+
+  if(markerEditorToggleBtn){
+    markerEditorToggleBtn.onclick = function(){
+      if(markerEditorModeActive) exitMarkerEditorMode();
+      else enterMarkerEditorMode(true);
+    };
+  }
+  if(markerPreviewBtn) markerPreviewBtn.onclick = function(){ previewMarkerFromTuner(false); };
+  if(markerViewBtn) markerViewBtn.onclick = function(){ previewMarkerFromTuner(true); };
+  if(markerHideBtn) markerHideBtn.onclick = function(){ clearSelectedUnitExteriorMarker(); markerTunerStatus.textContent = 'Marker hidden.'; };
+  setMarkerEditorButtonState();
+  markerCopyBtn.onclick = async function(){
+    const out = updateMarkerSheetOutput();
+    const copied = await copyTextToClipboard('exterior_marker_offset\t' + out.offset + '\nexterior_marker_scale\t' + out.scale + (out.camera ? ('\nexterior_marker_camera\t' + out.camera) : ''));
+    markerTunerStatus.textContent = copied ? 'Copied. Paste into the Sheet.' : 'Copy failed. Select the text and copy manually.';
+    try{ markerSheetOutput.select(); }catch(_){ }
+  };
 
   // Hide label editing tools by default; only admins can unlock them.
   editLabelsBtn.style.display = 'none';
@@ -1883,6 +2910,7 @@ async function refreshFutureProjects(bIdx){
     try{ chartDiv.style.display = 'none'; }catch(_){ }
     try{ gfxBtn.style.display = 'none'; }catch(_){ }
     try{ if(cinematicToolBtn) cinematicToolBtn.style.display = 'none'; }catch(_){ }
+      try{ descriptionEditorBtn.style.display = 'none'; labelsEditorBtn.style.display = 'none'; markerEditorBtn.style.display = 'none'; closeAdminEditorPanels(); }catch(_){ }
     try{ if(cinematicCard) cinematicCard.style.display = 'none'; }catch(_){ }
     if(miniRoot) miniRoot.style.display = 'none';
     if(compassRoot) compassRoot.style.display = 'none';
@@ -2243,7 +3271,7 @@ async function refreshFutureProjects(bIdx){
       const saved = presentationSavedState || {};
       chartDiv.style.display = 'flex';
       gfxBtn.style.display = 'flex';
-      try{ if(cinematicToolBtn && isEditorAdmin()) cinematicToolBtn.style.display = 'flex'; }catch(_){ }
+      try{ if(cinematicToolBtn && isEditorAdmin()) cinematicToolBtn.style.display = 'flex'; updateAdminEditorButtonsVisibility(); }catch(_){ }
       if(showLabelsToggle){ showLabelsToggle.checked = !!saved.labels; renderSelectionLabels(); }
       if(saved.minimap !== undefined){
         minimapEnabledByUser = !!saved.minimap;
@@ -2885,7 +3913,7 @@ async function refreshFutureProjects(bIdx){
     }
 
     function getDirectInteriorViewValue(idx){
-      const list = interiorMetaByBuilding[idx] || [];
+      const list = hvGetMarkerEditorTargetsForBuilding(idx);
       const unitIndexes = [];
       const fallbackIndexes = [];
       list.forEach(function(item, itemIdx){
@@ -3341,16 +4369,28 @@ async function refreshFutureProjects(bIdx){
 
     for (let i=0;i<b.length;i++){
       const br = b[i];
-      const key=normKey(br.name); const list=interiorsByKey.get(key)||[];
+      const possibleKeys = [br.name, br.building_key, br.key, br.id, br.slug].map(normKey).filter(Boolean);
+      const seenRows = new Set();
+      const list = [];
+      possibleKeys.forEach(function(key){
+        (interiorsByKey.get(key) || []).forEach(function(item){
+          if(seenRows.has(item)) return;
+          seenRows.add(item);
+          list.push(item);
+        });
+      });
       interiorMetaByBuilding[i]=list;
       interiorEntitiesByBuilding[i]=new Array(list.length).fill(null);
       interiorLoadPromisesByBuilding[i]=new Array(list.length).fill(null);
       interiorBlobUrlsByBuilding[i]=new Array(list.length).fill(null);
       interiorBlobFetchPromisesByBuilding[i]=new Array(list.length).fill(null);
     }
+    markerTargetItemsByBuilding = interiorMetaByBuilding;
+    try{ rebuildViewOptions(Number(selectBox && selectBox.value || 0)); }catch(_){ }
+    try{ rebuildMarkerTargetListForCurrentBuilding(); }catch(_){ }
 
-    async function ensureInteriorEntity(bIdx, itemIdx){
-      const meta = (interiorMetaByBuilding[bIdx]||[])[itemIdx] || null;
+    async function hvTryEnsureInteriorEntityForMarker(bIdx, itemIdx){
+      const meta = hvGetMarkerEditorTargetsForBuilding(bIdx)[itemIdx] || null;
       if(!meta || !isLikelyModelUrl(meta.model_url)) return null;
       if((interiorEntitiesByBuilding[bIdx]||[])[itemIdx]) return interiorEntitiesByBuilding[bIdx][itemIdx];
       if((interiorLoadPromisesByBuilding[bIdx]||[])[itemIdx]) return interiorLoadPromisesByBuilding[bIdx][itemIdx];
@@ -3416,7 +4456,7 @@ async function refreshFutureProjects(bIdx){
         if(!activeInteriorSelection){ requestSceneRenderBurst(4); return; }
         const sel = activeInteriorSelection;
         destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: true, silent: true });
-        await ensureInteriorEntity(sel.bIdx, sel.itemIdx);
+        await hvTryEnsureInteriorEntityForMarker(sel.bIdx, sel.itemIdx);
         await updateView(sel.bIdx, { forceViewValue: (sel.kind || 'unit') + ':' + sel.itemIdx });
       }catch(err){
         console.warn('Model quality reload failed:', err);
@@ -4126,7 +5166,7 @@ async function refreshFutureProjects(bIdx){
         state.selections[targetKey] = value;
         customizationSelectionsByKey.set(makeCustomizationSelectionKey(state.bIdx, state.itemIdx), Object.assign({}, state.selections));
         destroyInteriorEntity(state.bIdx, state.itemIdx, { keepBlobUrl: true, silent: true });
-        const reloaded = await ensureInteriorEntity(state.bIdx, state.itemIdx);
+        const reloaded = await hvTryEnsureInteriorEntityForMarker(state.bIdx, state.itemIdx);
         if(thisToken !== customizationApplyToken) return;
         if(!reloaded) throw new Error('Model reload failed after finish change');
         reloaded.show = true;
@@ -4313,7 +5353,7 @@ function fmtMoneyNoDash(n){
       const box=modal.querySelector('#modalBox');
       const loan=recalcLoan();
       const rows=compareState.map(({bIdx,uIdx})=>{
-        const br=b[bIdx], ur=(interiorMetaByBuilding[bIdx]||[])[uIdx]||{};
+        const br=b[bIdx], ur=hvGetMarkerEditorTargetsForBuilding(bIdx)[uIdx]||{};
         const price=getCurrentPrice(ur,br);
         const area=getAreaSqft(ur);
         const beds=getBeds(ur);
@@ -4349,7 +5389,7 @@ function fmtMoneyNoDash(n){
     const similarBody=similarCard.querySelector('#similarBody');
 
     function buildSimilarList(bIdx,uIdx){
-      const list=(interiorMetaByBuilding[bIdx]||[]);
+      const list=hvGetMarkerEditorTargetsForBuilding(bIdx);
       const br=b[bIdx];
       const base=list[uIdx]||{};
       const priceBase=getCurrentPrice(base,br);
@@ -4566,7 +5606,7 @@ function fmtMoneyNoDash(n){
         const cam=viewer.camera.positionWC;
         const v=Cesium.Cartesian3.subtract(cam,origin,new Cesium.Cartesian3());
         const eCam=Cesium.Cartesian3.dot(v,east), nCam=Cesium.Cartesian3.dot(v,north);
-        const uRow=(interiorMetaByBuilding[ps.b]||[])[ps.u]||{};
+        const uRow=hvGetMarkerEditorTargetsForBuilding(ps.b)[ps.u]||{};
         const offE=toNum(uRow.offset_east_m)||0, offN=toNum(uRow.offset_north_m)||0;
         const eRel=eCam-(offE+(ps.cE||0)), nRel=nCam-(offN+(ps.cN||0));
         const rad=-(ps.rot||0)*Math.PI/180, cos=Math.cos(rad), sin=Math.sin(rad);
@@ -4650,7 +5690,7 @@ function fmtMoneyNoDash(n){
 
 
     // ===== 3D Label Overlay / Editor =====
-    const labelEditorState = {
+    labelEditorState = {
       enabled: false,
       editMode: false,
       pendingPick: false,
@@ -4913,7 +5953,7 @@ function fmtMoneyNoDash(n){
         labelEditorState.entities.push(e);
       });
     }
-    function refreshLabelListUI(){
+    refreshLabelListUI = function(){
       const items = getCurrentSelectionLabels();
       if(labelEditorState.currentSelection && labelEditorState.currentSelection.meta && isPanoramaRow(labelEditorState.currentSelection.meta)) {
         labelsExportBox.value = firstFilled(labelEditorState.currentSelection.meta.panorama_label_annotations, labelEditorState.currentSelection.meta.panorama_labels, formatLabelAnnotations(items));
@@ -4955,9 +5995,17 @@ function fmtMoneyNoDash(n){
 
       if(headerLabelsWrap) headerLabelsWrap.style.display = 'none';
 
-      labelToolsCard.style.display = usable ? 'block' : 'none';
-      adminUnitEditorCard.style.display = (usable && admin) ? 'block' : 'none';
+      updateAdminEditorButtonsVisibility();
+      labelToolsCard.style.display = (usable && admin && labelEditorPanelOpen) ? 'flex' : 'none';
+      adminUnitEditorCard.style.display = (usable && admin && descriptionEditorPanelOpen) ? 'flex' : 'none';
+      try{
+        const markerUsable = !!(sel && sel.meta && isMarkerEditableKind(sel.kind) && admin);
+        unitMarkerTunerCard.style.display = (admin && markerEditorPanelOpen) ? 'flex' : 'none';
+        if(admin) rebuildMarkerTargetListForCurrentBuilding();
+      }catch(_){ }
       if(!usable){
+        try{ if(markerEditorModeActive) exitMarkerEditorMode(); }catch(_){ }
+        if(!markerEditorPanelOpen) { try{ unitMarkerTunerCard.style.display = 'none'; }catch(_){ } }
         showLabelsToggle.checked = false;
         labelEditorState.editMode = false;
         labelEditorState.pendingPick = false;
@@ -4970,6 +6018,8 @@ function fmtMoneyNoDash(n){
       editLabelsBtn.style.display = admin ? 'inline-flex' : 'none';
 
       if(!admin){
+        try{ if(markerEditorModeActive) exitMarkerEditorMode(); }catch(_){ }
+        try{ unitMarkerTunerCard.style.display = 'none'; }catch(_){ }
         labelEditorState.editMode = false;
         labelEditorState.pendingPick = false;
         labelEditorBody.style.display='none';
@@ -5357,6 +6407,42 @@ adminApplyBtn.onclick = function(){
 };
 
 
+if(saveLabelsBtn){
+  saveLabelsBtn.onclick = async function(){
+    if(!isEditorAdmin()) return;
+    if(!labelEditorState || !labelEditorState.currentSelection || labelEditorState.currentSelection.isExterior){
+      labelEditorStatus.textContent = 'Select a unit or amenity first.';
+      return;
+    }
+    try{ adminApplyBtn.onclick && adminApplyBtn.onclick(); }catch(_){ }
+    const payload = buildEditorSavePayload();
+    if(!payload){
+      labelEditorStatus.textContent = 'Unable to build save payload for labels.';
+      return;
+    }
+    saveLabelsBtn.disabled = true;
+    saveLabelsBtn.textContent = 'Saving...';
+    labelEditorStatus.textContent = 'Saving labels...';
+    try{
+      const result = await saveEditorPayloadToSheet(payload);
+      if(result && result.ok){
+        labelEditorStatus.textContent = 'Labels saved successfully.';
+        saveLabelsBtn.textContent = 'Saved ✓';
+        setTimeout(function(){ saveLabelsBtn.disabled = false; saveLabelsBtn.textContent = 'Save labels'; }, 1200);
+      }else{
+        labelEditorStatus.textContent = 'Save failed: ' + ((result && result.error) || 'Unknown error');
+        saveLabelsBtn.disabled = false;
+        saveLabelsBtn.textContent = 'Save labels';
+      }
+    }catch(err){
+      labelEditorStatus.textContent = 'Save failed: ' + err;
+      saveLabelsBtn.disabled = false;
+      saveLabelsBtn.textContent = 'Save labels';
+    }
+  };
+}
+
+
     async function applyPanoramaSelectionForCurrent(actionValue){
       const sel = labelEditorState.currentSelection;
       if(!sel || sel.isExterior || !sel.meta || !isPanoramaRow(sel.meta)) return false;
@@ -5373,7 +6459,7 @@ adminApplyBtn.onclick = function(){
         await preloadPanoramaSelectionImage(item);
         if(thisToken !== panoramaApplyToken) return true;
         destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: true, silent: true });
-        const reloaded = await ensureInteriorEntity(sel.bIdx, sel.itemIdx);
+        const reloaded = await hvTryEnsureInteriorEntityForMarker(sel.bIdx, sel.itemIdx);
         if(thisToken !== panoramaApplyToken) return true;
         if(reloaded) reloaded.show = true;
         updatePanoramaLabelUiHints();
@@ -5448,7 +6534,10 @@ adminApplyBtn.onclick = function(){
     function rebuildViewOptions(idx){
       viewSelect.innerHTML='';
       const o=document.createElement('option'); o.value='exterior'; o.textContent='Building View'; viewSelect.appendChild(o);
-      const list=interiorMetaByBuilding[idx]||[];
+      let list = [];
+      try{ list = (markerTargetItemsByBuilding && markerTargetItemsByBuilding[idx]) ? markerTargetItemsByBuilding[idx] : []; }catch(_){ list = []; }
+      if(!list || !list.length){ try{ list = (interiorMetaByBuilding && interiorMetaByBuilding[idx]) ? interiorMetaByBuilding[idx] : []; }catch(_){ list = []; } }
+      if(!list || !list.length) list = hvGetMarkerEditorTargetsForBuilding(idx);
       list.forEach((u,k)=>{
         const o2=document.createElement('option');
         const panorama = isPanoramaRow(u);
@@ -5460,6 +6549,7 @@ adminApplyBtn.onclick = function(){
         viewSelect.appendChild(o2);
       });
       viewSelect.value='exterior';
+      try{ rebuildMarkerTargetListForCurrentBuilding(); }catch(_){ }
     }
 
     // ===== Direct share links =====
@@ -5499,7 +6589,7 @@ adminApplyBtn.onclick = function(){
       if(view && optionExists(view)) return view;
       const unitRaw = String(rawUnit || '').trim();
       if(!unitRaw) return 'exterior';
-      const list = interiorMetaByBuilding[bIdx] || [];
+      const list = hvGetMarkerEditorTargetsForBuilding(bIdx);
       if(Number.isFinite(Number(unitRaw))){
         const n = Number(unitRaw);
         const values = ['unit:'+n, 'panorama:'+n, 'amenity:'+n];
@@ -5528,7 +6618,7 @@ adminApplyBtn.onclick = function(){
       if(viewValue !== 'exterior'){
         const parts = viewValue.split(':');
         const itemIdx = Number(parts[1] || 0);
-        const item = (interiorMetaByBuilding[bIdx] || [])[itemIdx] || {};
+        const item = hvGetMarkerEditorTargetsForBuilding(bIdx)[itemIdx] || {};
         params.u = getItemShareKey(item, itemIdx);
       }
       return params;
@@ -5569,16 +6659,29 @@ adminApplyBtn.onclick = function(){
       const selectedParts = selectedValue.split(':');
       const kind = selectedParts[0] || 'unit';
       const idx = Number(selectedParts[1] || 0);
-      const meta = (interiorMetaByBuilding[Number(selectBox.value)] || [])[idx] || null;
+      const meta = hvGetMarkerEditorTargetsForBuilding(Number(selectBox.value))[idx] || null;
       const name = getItemDisplayName(meta, 'selected view');
       if(kind === 'panorama') return 'Loading panorama...';
       if(kind === 'amenity') return 'Loading amenity...';
       return name ? ('Entering ' + name + '...') : 'Entering unit...';
     }
+    function selectedTargetHasExteriorReveal(){
+      try{
+        const selectedValue = viewSelect.value || 'exterior';
+        if(selectedValue === 'exterior') return false;
+        const parts = selectedValue.split(':');
+        if((parts[0] || '') !== 'unit') return false;
+        const bIdx = Number(selectBox.value);
+        const itemIdx = Number(parts[1] || 0);
+        const meta = hvGetMarkerEditorTargetsForBuilding(bIdx)[itemIdx] || null;
+        return !!meta && hasExteriorMarkerConfig(meta);
+      }catch(_){ return false; }
+    }
     async function runViewUpdateWithTransition(idx){
       const selectedValue = viewSelect.value || 'exterior';
       const isExteriorTarget = selectedValue === 'exterior';
-      const shouldUseOverlay = !isExteriorTarget || currentMode !== 'exterior';
+      const useExteriorReveal = selectedTargetHasExteriorReveal();
+      const shouldUseOverlay = !useExteriorReveal && (!isExteriorTarget || currentMode !== 'exterior');
       if(!shouldUseOverlay){
         return updateView(idx);
       }
@@ -5599,6 +6702,7 @@ adminApplyBtn.onclick = function(){
     }
 
     selectBox.addEventListener('change', async ()=>{
+      try{ if(markerEditorModeActive) exitMarkerEditorMode(); }catch(_){ }
       const idx = Number(selectBox.value);
       hiddenPoiTypes = new Set();
       rebuildChipsForBuilding(idx);
@@ -5614,6 +6718,7 @@ adminApplyBtn.onclick = function(){
       }
     });
     viewSelect.addEventListener('change', async ()=>{
+      try{ if(markerEditorModeActive) exitMarkerEditorMode(); }catch(_){ }
       const idx = Number(selectBox.value);
       applyPoiTypeFilters(idx);
       if(showFutureProjectsToggle && showFutureProjectsToggle.checked && hasFutureProjectsByBuilding[idx]){
@@ -5680,7 +6785,7 @@ function hideUnitMetaUI(){
       const selectedParts=selectedValue.split(':');
       const selectedKind=selectedParts[0]||'exterior';
       const selectedIndex=Number(selectedParts[1]||0);
-      const selectedMeta=(interiorMetaByBuilding[idx]||[])[selectedIndex]||null;
+      const selectedMeta=hvGetMarkerEditorTargetsForBuilding(idx)[selectedIndex]||null;
       const selectedIsAmenity = !isExterior && selectedKind==='amenity' && !!selectedMeta;
       const selectedIsPanorama = !isExterior && selectedKind==='panorama' && !!selectedMeta;
       setInteriorEntryButtonsVisibility(idx, isExterior);
@@ -5703,20 +6808,27 @@ function hideUnitMetaUI(){
       const thisSwitchToken = ++interiorSwitchToken;
       const hasRealModel = !!selectedMeta && isLikelyModelUrl(selectedMeta.model_url);
       const wantsInteriorModel = !isExterior && !!selectedMeta && hasRealModel && (selectedKind==='unit' || selectedKind==='amenity' || selectedKind==='panorama');
+      const useUnitExteriorReveal = wantsInteriorModel && selectedKind === 'unit' && hasExteriorMarkerConfig(selectedMeta);
 
       stopCameraTracking();
-      modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&isExterior);
+      if(!useUnitExteriorReveal) clearSelectedUnitExteriorMarker();
+      modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&(isExterior || useUnitExteriorReveal));
       destroyNonActiveInteriorEntities(wantsInteriorModel ? { bIdx: idx, itemIdx: selectedIndex } : null);
 
       let activeInteriorEntity = null;
       if(wantsInteriorModel){
         activeInteriorSelection = { bIdx: idx, itemIdx: selectedIndex };
         title.textContent = (row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '') + ' (loading...)';
-        beginViewLoad('Loading selected model...');
+        beginViewLoad(useUnitExteriorReveal ? 'Locating selected unit...' : 'Loading selected model...');
         didBeginLoad = true;
         requestSceneRenderBurst(3);
+        let loadPromise = null;
         try{
-          activeInteriorEntity = await ensureInteriorEntity(idx, selectedIndex);
+          loadPromise = hvTryEnsureInteriorEntityForMarker(idx, selectedIndex);
+          if(useUnitExteriorReveal){
+            await playSelectedUnitExteriorReveal(idx, selectedMeta, loadPromise);
+          }
+          activeInteriorEntity = await loadPromise;
         } finally {
           if(didBeginLoad){ endViewLoad(); didBeginLoad = false; }
         }
@@ -5728,8 +6840,14 @@ function hideUnitMetaUI(){
       (interiorEntitiesByBuilding[idx]||[]).forEach((ent,k)=>{
         if(ent) ent.show = !!activeInteriorEntity && (selectedIndex===k) && (selectedKind==='unit' || selectedKind==='amenity' || selectedKind==='panorama');
       });
+      if(useUnitExteriorReveal && activeInteriorEntity){
+        modelEntities.forEach((ent,i)=>{ if(ent && i===idx) ent.show = false; });
+        clearSelectedUnitExteriorMarker();
+      }
 
       if(wantsInteriorModel && !activeInteriorEntity){
+        clearSelectedUnitExteriorMarker();
+        modelEntities.forEach((ent,i)=>{ if(ent) ent.show = (i===idx) && false; });
         title.textContent = (row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '') + ' (model failed to load)';
         descBox.style.display = 'block';
         descBox.textContent = 'The model did not finish loading. Please try this unit again.';
@@ -6047,7 +7165,7 @@ function hideUnitMetaUI(){
     function refreshAllCityLayers(idx){
       applyPoiTypeFilters(idx);
     }
-    selectBox.addEventListener('change',()=>refreshAllCityLayers(Number(selectBox.value)));
+    selectBox.addEventListener('change',()=>{ refreshAllCityLayers(Number(selectBox.value)); try{ rebuildMarkerTargetListForCurrentBuilding(); }catch(_){} });
 
     // init
     setCollapsed(false);
