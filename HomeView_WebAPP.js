@@ -7160,12 +7160,207 @@ function hideUnitMetaUI(){
       }
       syncLabelToolsVisibility();
       renderSelectionLabels();
+      hvScheduleContextGuide(650);
     }
 
     function refreshAllCityLayers(idx){
       applyPoiTypeFilters(idx);
     }
     selectBox.addEventListener('change',()=>{ refreshAllCityLayers(Number(selectBox.value)); try{ rebuildMarkerTargetListForCurrentBuilding(); }catch(_){} });
+
+
+    // ===== First Launch Chooser + First Run Guide =====
+    const HV_ONBOARDING_VERSION = 'v1';
+    function hvSafeLocalGet(key){
+      try{ return localStorage.getItem(key); }catch(_){ return null; }
+    }
+    function hvSafeLocalSet(key, value){
+      try{ localStorage.setItem(key, value); }catch(_){ }
+    }
+    function hvOnboardingSeenKey(kind){ return 'homeview.onboarding.' + HV_ONBOARDING_VERSION + '.' + kind; }
+    function hvGetBuildingLabelByIndex(i){
+      const row = b[i] || buildingsData[i] || {};
+      return firstFilled(row.name, row.title, row.building_key, 'Building ' + (Number(i)+1));
+    }
+    function hvGetTargetsForOnboardingBuilding(bIdx){
+      let list = [];
+      try{ list = hvGetMarkerEditorTargetsForBuilding(bIdx) || []; }catch(_){ list = []; }
+      return list.filter(function(item){ return item && !getExplicitItemType(item).includes('future_project'); });
+    }
+    function hvMakeLaunchChooserOption(text, value){
+      const opt = document.createElement('option');
+      opt.value = String(value);
+      opt.textContent = text;
+      return opt;
+    }
+    function showHomeViewLaunchChooser(){
+      return new Promise(function(resolve){
+        try{
+          launchLoadingOverlay.style.background = 'linear-gradient(180deg, rgba(7,10,16,.88), rgba(7,10,16,.72))';
+          launchLoadingOverlay.style.pointerEvents = 'auto';
+          launchLoadingOverlay.innerHTML = `
+            <div class="ui-card" style="width:min(92vw,420px);border-radius:22px;padding:20px 22px;box-shadow:0 24px 70px rgba(0,0,0,.32);font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:rgba(255,255,255,.96)!important;color:#111!important">
+              <div style="font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#666!important;margin-bottom:6px">HomeView</div>
+              <div style="font-size:22px;font-weight:900;line-height:1.2;margin-bottom:8px">What would you like to explore?</div>
+              <div style="font-size:13px;line-height:1.45;color:#555!important;margin-bottom:14px">Choose a building or jump directly into a unit. You can change this later from Controls.</div>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700;margin-bottom:10px">Building
+                <select id="hvLaunchBuildingSelect" class="ui-select" style="padding:10px;border-radius:10px;font-size:14px;width:100%"></select>
+              </label>
+              <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:700;margin-bottom:14px">View / Unit
+                <select id="hvLaunchUnitSelect" class="ui-select" style="padding:10px;border-radius:10px;font-size:14px;width:100%"></select>
+              </label>
+              <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+                <button id="hvLaunchSkipBtn" class="ui-btn" style="border-radius:10px;padding:10px 12px;font-weight:800;cursor:pointer">Skip</button>
+                <button id="hvLaunchConfirmBtn" class="ui-btn" style="border-radius:10px;padding:10px 16px;font-weight:900;cursor:pointer;background:#111!important;color:#fff!important;border-color:#111!important">Start Exploring</button>
+              </div>
+            </div>
+          `;
+          const bSel = launchLoadingOverlay.querySelector('#hvLaunchBuildingSelect');
+          const uSel = launchLoadingOverlay.querySelector('#hvLaunchUnitSelect');
+          const confirmBtn = launchLoadingOverlay.querySelector('#hvLaunchConfirmBtn');
+          const skipBtn = launchLoadingOverlay.querySelector('#hvLaunchSkipBtn');
+
+          for(let i=0;i<b.length;i++){
+            bSel.appendChild(hvMakeLaunchChooserOption(hvGetBuildingLabelByIndex(i), i));
+          }
+          function refreshUnits(){
+            const bIdx = Number(bSel.value || 0);
+            uSel.innerHTML = '';
+            uSel.appendChild(hvMakeLaunchChooserOption('Building View', 'exterior'));
+            hvGetTargetsForOnboardingBuilding(bIdx).forEach(function(item, k){
+              const panorama = isPanoramaRow(item);
+              const amenity = !panorama && isAmenityRow(item);
+              const prefix = panorama ? 'panorama:' : (amenity ? 'amenity:' : 'unit:');
+              const fallback = panorama ? 'Panorama #' : (amenity ? 'Amenity #' : 'Unit #');
+              uSel.appendChild(hvMakeLaunchChooserOption(getItemDisplayName(item, fallback + (k+1)), prefix + k));
+            });
+          }
+          bSel.addEventListener('change', refreshUnits);
+          refreshUnits();
+          skipBtn.onclick = function(){
+            resolve({ skipped:true, bIdx:0, viewValue:'exterior' });
+          };
+          confirmBtn.onclick = function(){
+            resolve({ skipped:false, bIdx:Number(bSel.value || 0), viewValue:String(uSel.value || 'exterior') });
+          };
+        }catch(err){
+          console.warn('Launch chooser failed:', err);
+          resolve({ skipped:true, bIdx:0, viewValue:'exterior' });
+        }
+      });
+    }
+
+    let hvGuideActive = false;
+    const hvGuideOverlay = document.createElement('div');
+    hvGuideOverlay.id = 'hvFirstRunGuideOverlay';
+    hvGuideOverlay.style.cssText = 'position:fixed;inset:0;z-index:910000;display:none;pointer-events:none;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif';
+    hvGuideOverlay.innerHTML = `
+      <div id="hvGuideDim" style="position:absolute;inset:0;background:rgba(0,0,0,.28);pointer-events:auto"></div>
+      <div id="hvGuideHighlight" style="position:fixed;border:3px solid #fff;border-radius:14px;box-shadow:0 0 0 9999px rgba(0,0,0,.28),0 12px 38px rgba(0,0,0,.28);display:none;transition:all .2s ease;pointer-events:none"></div>
+      <div id="hvGuideBubble" class="ui-card" style="position:fixed;max-width:min(86vw,320px);border-radius:16px;padding:14px 15px;box-shadow:0 16px 44px rgba(0,0,0,.28);pointer-events:auto">
+        <div id="hvGuideTitle" style="font-weight:900;font-size:15px;margin-bottom:5px">HomeView tip</div>
+        <div id="hvGuideText" style="font-size:13px;line-height:1.45;color:#444!important;margin-bottom:12px"></div>
+        <div style="display:flex;gap:8px;justify-content:space-between;align-items:center">
+          <button id="hvGuideSkip" class="ui-btn" style="border-radius:9px;padding:7px 10px;font-size:12px;font-weight:800;cursor:pointer">Skip</button>
+          <button id="hvGuideNext" class="ui-btn" style="border-radius:9px;padding:7px 12px;font-size:12px;font-weight:900;cursor:pointer;background:#111!important;color:#fff!important;border-color:#111!important">Next</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(hvGuideOverlay);
+    const hvGuideHighlight = hvGuideOverlay.querySelector('#hvGuideHighlight');
+    const hvGuideBubble = hvGuideOverlay.querySelector('#hvGuideBubble');
+    const hvGuideTitle = hvGuideOverlay.querySelector('#hvGuideTitle');
+    const hvGuideText = hvGuideOverlay.querySelector('#hvGuideText');
+    const hvGuideSkip = hvGuideOverlay.querySelector('#hvGuideSkip');
+    const hvGuideNext = hvGuideOverlay.querySelector('#hvGuideNext');
+
+    function hvGetRectForGuide(target){
+      try{
+        if(!target) return null;
+        const el = (typeof target === 'function') ? target() : target;
+        if(!el || !el.getBoundingClientRect) return null;
+        const r = el.getBoundingClientRect();
+        if(!r || r.width <= 0 || r.height <= 0) return null;
+        return r;
+      }catch(_){ return null; }
+    }
+    function hvPositionGuideStep(step){
+      const r = hvGetRectForGuide(step.target);
+      hvGuideTitle.textContent = step.title || 'HomeView tip';
+      hvGuideText.textContent = step.text || '';
+      hvGuideNext.textContent = step.last ? 'Start Exploring' : 'Next';
+      if(r){
+        const pad = 6;
+        hvGuideHighlight.style.display = 'block';
+        hvGuideHighlight.style.left = Math.max(8, r.left - pad) + 'px';
+        hvGuideHighlight.style.top = Math.max(8, r.top - pad) + 'px';
+        hvGuideHighlight.style.width = Math.max(24, r.width + pad*2) + 'px';
+        hvGuideHighlight.style.height = Math.max(24, r.height + pad*2) + 'px';
+
+        const bubbleW = Math.min(320, window.innerWidth - 24);
+        let left = Math.min(Math.max(12, r.left), window.innerWidth - bubbleW - 12);
+        let top = r.bottom + 14;
+        if(top + 150 > window.innerHeight) top = Math.max(12, r.top - 170);
+        hvGuideBubble.style.left = left + 'px';
+        hvGuideBubble.style.top = top + 'px';
+      }else{
+        hvGuideHighlight.style.display = 'none';
+        hvGuideBubble.style.left = '50%';
+        hvGuideBubble.style.top = '50%';
+        hvGuideBubble.style.transform = 'translate(-50%,-50%)';
+        return;
+      }
+      hvGuideBubble.style.transform = 'none';
+    }
+    function hvRunGuide(kind, steps){
+      if(hvGuideActive || !steps || !steps.length) return;
+      if(hvSafeLocalGet(hvOnboardingSeenKey(kind))) return;
+      hvGuideActive = true;
+      let i = 0;
+      function finish(){
+        hvSafeLocalSet(hvOnboardingSeenKey(kind), '1');
+        hvGuideOverlay.style.display = 'none';
+        hvGuideActive = false;
+      }
+      function render(){
+        const step = Object.assign({}, steps[i]);
+        step.last = i >= steps.length - 1;
+        hvGuideOverlay.style.display = 'block';
+        hvPositionGuideStep(step);
+      }
+      hvGuideSkip.onclick = finish;
+      hvGuideNext.onclick = function(){
+        if(i >= steps.length - 1) finish();
+        else { i += 1; render(); }
+      };
+      render();
+      requestSceneRenderBurst(2);
+    }
+    function hvMaybeRunContextGuide(){
+      try{
+        if(currentMode === 'exterior'){
+          hvRunGuide('building', [
+            { title:'Choose a building', text:'Use this menu to switch between buildings.', target:function(){ return selectBox; } },
+            { title:'Open a unit or view', text:'Pick a unit, amenity, or panorama here. HomeView will take you there.', target:function(){ return viewSelect; } },
+            { title:'Ask the AI Advisor', text:'Use AI Advisor when you want quick answers about the project.', target:function(){ return aiAdvisorBtn; } }
+          ]);
+        }else if(currentMode === 'interior' || currentMode === 'amenity'){
+          hvRunGuide('interior', [
+            { title:'Look around', text:'Drag with your mouse or finger to look around the space.' },
+            { title:'Move inside the unit', text:'Use the joystick to move without the keyboard.', target:function(){ return document.getElementById('cameraJoystick') || document.querySelector('[id*="joystick"], .joystick'); } }
+          ]);
+        }else if(currentMode === 'panorama'){
+          hvRunGuide('panorama', [
+            { title:'Look around', text:'Drag with your mouse or finger to look around the 360° photo.' },
+            { title:'Move through the home', text:'Click the 3D hotspot buttons inside the panorama to move to another spot.' }
+          ]);
+        }
+      }catch(err){ console.warn('HomeView guide failed:', err); }
+    }
+    function hvScheduleContextGuide(delay){
+      setTimeout(hvMaybeRunContextGuide, Number(delay || 550));
+    }
+
 
     // init
     setCollapsed(false);
@@ -7175,6 +7370,20 @@ function hideUnitMetaUI(){
       rebuildViewOptions(0);
       if(selectBox) selectBox.value = '0';
       if(viewSelect) viewSelect.value = 'exterior';
+      try{
+        const launchChoice = await showHomeViewLaunchChooser();
+        const chosenBuildingIdx = Number(launchChoice && launchChoice.bIdx || 0);
+        if(selectBox) selectBox.value = String(chosenBuildingIdx);
+        hiddenPoiTypes = new Set();
+        rebuildChipsForBuilding(chosenBuildingIdx);
+        rebuildViewOptions(chosenBuildingIdx);
+        if(viewSelect) viewSelect.value = String((launchChoice && launchChoice.viewValue) || 'exterior');
+        applyPoiTypeFilters(chosenBuildingIdx);
+        syncFutureProjectsChip();
+        setLaunchLoadingText((viewSelect && viewSelect.value !== 'exterior') ? 'Opening selected unit...' : 'Opening selected building...');
+      }catch(err){
+        console.warn('Launch chooser selection failed:', err);
+      }
     }
     const initialBuildingIdx = Number(selectBox && selectBox.value || 0);
     setInteriorEntryButtonsVisibility(initialBuildingIdx, true);
@@ -7182,6 +7391,7 @@ function hideUnitMetaUI(){
       await updateView(initialBuildingIdx);
     }finally{
       hideLaunchLoading();
+      hvScheduleContextGuide(650);
     }
     requestSceneRender();
 
