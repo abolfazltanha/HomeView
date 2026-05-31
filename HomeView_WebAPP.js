@@ -123,6 +123,8 @@ Promise.all([
   let cameraJoystickEnabledByUser = true;
   let minimapEnabledByUser = true;
   let autoHideUIEnabled = true;
+  var navigationLabelsEnabled = true;
+  var infoLabelsEnabled = false;
   let uiAutoHidden = false;
   let presentationModeActive = false;
   let presentationSavedState = null;
@@ -277,6 +279,66 @@ Promise.all([
     if (d) return d;
     return firstFilled(fallbackRow && fallbackRow.description, fallbackRow && fallbackRow.desc, fallbackRow && fallbackRow.about);
   }
+
+
+  // ===== Room-to-Room 3D Loading =====
+  // v73 fix: label picking follows the active room model, not only the original unit model.
+  // Optional Sheet column per unit:
+  // room_model_items = "key|Label|model_url|heading; bedroom|Bedroom|https://.../bedroom.glb|90"
+  // Clickable 3D labels can use actionType=open_room_model and actionValue=room key.
+  function hvSlugifyRoomKey(s){
+    return String(s || '').trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'') || 'room';
+  }
+  function getRoomModelItemsRaw(meta, row){
+    return firstFilled(
+      meta && meta.room_model_items,
+      meta && meta.room_models,
+      meta && meta.room_model_urls,
+      meta && meta.modular_room_models,
+      row && row.room_model_items,
+      row && row.room_models,
+      row && row.room_model_urls
+    );
+  }
+  function parseRoomModelItems(meta, row){
+    const raw = getRoomModelItemsRaw(meta, row);
+    if(!raw) return [];
+    const items = [];
+    String(raw).split(/;|\r?\n/).forEach(function(chunk){
+      const s = String(chunk || '').trim();
+      if(!s) return;
+      const parts = s.split('|').map(function(x){ return String(x || '').trim(); });
+      let key='', label='', url='', heading='';
+      if(parts.length >= 3){
+        if(isLikelyModelUrl(parts[1])){
+          label = parts[0] || 'Room';
+          key = hvSlugifyRoomKey(label);
+          url = parts[1];
+          heading = parts[2] || '';
+        }else{
+          key = hvSlugifyRoomKey(parts[0]);
+          label = parts[1] || parts[0] || 'Room';
+          url = parts[2];
+          heading = parts[3] || '';
+        }
+      }else if(parts.length >= 2){
+        label = parts[0] || 'Room';
+        key = hvSlugifyRoomKey(label);
+        url = parts[1];
+        heading = parts[2] || '';
+      }
+      if(!key) key = hvSlugifyRoomKey(label);
+      if(label && isLikelyModelUrl(url)) items.push({ key:key, label:label, url:url, heading:heading });
+    });
+    return items;
+  }
+  function getRoomModelItem(meta, row, keyOrLabel){
+    const needle = hvSlugifyRoomKey(keyOrLabel);
+    return parseRoomModelItems(meta, row).find(function(it){
+      return hvSlugifyRoomKey(it.key) === needle || hvSlugifyRoomKey(it.label) === needle;
+    }) || null;
+  }
+  function hasRoomModelItems(meta, row){ return parseRoomModelItems(meta, row).length > 0; }
 
 function normalizeHeaderKey(k){
   return String(k==null?'':k).trim().toLowerCase()
@@ -1114,6 +1176,17 @@ function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
   aiAdvisorBtn.style.cssText = 'height:32px;padding:0 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto';
   headerLeft.appendChild(aiAdvisorBtn);
 
+  const quickShowLabelsBtn = document.createElement('button');
+  quickShowLabelsBtn.type = 'button';
+  quickShowLabelsBtn.id = 'quickShowLabelsBtn';
+  quickShowLabelsBtn.textContent = 'Show Labels';
+  quickShowLabelsBtn.title = 'Show or hide 3D labels';
+  quickShowLabelsBtn.setAttribute('aria-label', 'Show or hide 3D labels');
+  quickShowLabelsBtn.className = 'ui-btn';
+  quickShowLabelsBtn.style.cssText = 'height:32px;padding:0 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto;display:none';
+  headerLeft.appendChild(quickShowLabelsBtn);
+
+
   const shareViewBtn = document.createElement('button');
   shareViewBtn.type = 'button';
   shareViewBtn.textContent = 'Share';
@@ -1181,6 +1254,49 @@ function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
   const panelBody = document.createElement('div');
   panelBody.style.cssText="display:flex;flex-direction:column;gap:8px";
   chartDiv.appendChild(panelBody);
+
+  const quickLabelsRow = document.createElement('div');
+  quickLabelsRow.style.cssText = 'display:none;align-items:center;gap:8px;margin:0 0 8px;flex-wrap:wrap;';
+  const quickLabelsText = document.createElement('div');
+  quickLabelsText.style.cssText = 'display:none';
+  quickLabelsText.textContent = '';
+  quickLabelsRow.appendChild(quickLabelsText);
+  quickShowLabelsBtn.style.height = '32px';
+  quickShowLabelsBtn.style.padding = '0 14px';
+  quickShowLabelsBtn.style.borderRadius = '8px';
+  quickShowLabelsBtn.style.fontSize = '12px';
+  quickShowLabelsBtn.style.textAlign = 'center';
+  quickShowLabelsBtn.style.justifyContent = 'center';
+  quickShowLabelsBtn.style.alignItems = 'center';
+  quickShowLabelsBtn.style.touchAction = 'manipulation';
+  quickShowLabelsBtn.style.cursor = 'pointer';
+  quickShowLabelsBtn.style.userSelect = 'none';
+  quickShowLabelsBtn.style.minWidth = '92px';
+  quickShowLabelsBtn.style.zIndex = '500003';
+  quickShowLabelsBtn.style.position = 'relative';
+  quickShowLabelsBtn.style.pointerEvents = 'auto';
+  quickLabelsRow.style.pointerEvents = 'auto';
+  quickLabelsRow.appendChild(quickShowLabelsBtn);
+
+  const quickNavigationBtn = document.createElement('button');
+  quickNavigationBtn.type = 'button';
+  quickNavigationBtn.id = 'quickNavigationBtn';
+  quickNavigationBtn.textContent = 'Hide Navigation';
+  quickNavigationBtn.title = 'Show or hide navigation buttons';
+  quickNavigationBtn.setAttribute('aria-label', 'Show or hide navigation buttons');
+  quickNavigationBtn.className = 'ui-btn';
+  quickNavigationBtn.style.cssText = quickShowLabelsBtn.style.cssText || 'height:32px;padding:0 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto';
+  quickNavigationBtn.style.pointerEvents = 'auto';
+  quickNavigationBtn.style.position = 'relative';
+  quickNavigationBtn.style.zIndex = '500003';
+  quickNavigationBtn.style.touchAction = 'manipulation';
+  quickNavigationBtn.style.cursor = 'pointer';
+  quickNavigationBtn.style.userSelect = 'none';
+  quickNavigationBtn.style.minWidth = '120px';
+
+  quickLabelsRow.appendChild(quickNavigationBtn);
+  panelBody.appendChild(quickLabelsRow);
+
 
   let collapsed=false;
   function setCollapsed(c){
@@ -1472,9 +1588,10 @@ function renderChipSection(section, items){
           <select id="labelActionTypeSelect" class="ui-select" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0">
             <option value="none">None</option>
             <option value="open_panorama">Open panorama</option>
+            <option value="open_room_model">Open room model</option>
           </select>
         </label>
-        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Panorama key / title
+        <label style="display:flex;flex-direction:column;font-size:12px;gap:4px;min-width:0">Action value
           <input id="labelActionValueInput" class="ui-input" type="text" placeholder="e.g. livingroom" style="padding:8px;border-radius:8px;box-sizing:border-box;width:100%;min-width:0">
         </label>
       </div>
@@ -1490,6 +1607,128 @@ function renderChipSection(section, items){
     </div>`;
   panelBody.appendChild(labelToolsCard);
   const showLabelsToggle = labelToolsCard.querySelector('#showLabelsToggle');
+
+    
+    function hvEnsureCurrentLabelSelectionForActiveInterior(){
+      try{
+        // TDZ-safe: do not reference activeInteriorSelection here.
+        // Some builds initialize that variable later, so direct access can throw before setup finishes.
+        const sel = labelEditorState && labelEditorState.currentSelection ? labelEditorState.currentSelection : null;
+        if(sel && !sel.isExterior) return sel;
+      }catch(_){}
+      return null;
+    }
+
+function syncQuickShowLabelsButton(){
+      try{
+        const sel = (labelEditorState && labelEditorState.currentSelection) ? labelEditorState.currentSelection : null;
+        const usable = !!sel && !sel.isExterior && currentMode !== 'exterior';
+        const labelsOn = !!((typeof infoLabelsEnabled !== 'undefined') ? infoLabelsEnabled : false);
+        const navOn = !!((typeof navigationLabelsEnabled !== 'undefined') ? navigationLabelsEnabled : true);
+
+        if(typeof quickLabelsRow !== 'undefined' && quickLabelsRow){
+          quickLabelsRow.style.display = usable ? 'flex' : 'none';
+          quickLabelsRow.style.pointerEvents = 'auto';
+        }
+
+        if(typeof quickShowLabelsBtn !== 'undefined' && quickShowLabelsBtn){
+          quickShowLabelsBtn.style.display = usable ? 'inline-flex' : 'none';
+          quickShowLabelsBtn.textContent = labelsOn ? 'Hide Labels' : 'Show Labels';
+          quickShowLabelsBtn.style.background = '#fff';
+          quickShowLabelsBtn.style.color = '#111';
+          quickShowLabelsBtn.style.webkitTextFillColor = quickShowLabelsBtn.style.color;
+          quickShowLabelsBtn.style.pointerEvents = 'auto';
+        }
+
+        if(typeof quickNavigationBtn !== 'undefined' && quickNavigationBtn){
+          quickNavigationBtn.style.display = usable ? 'inline-flex' : 'none';
+          quickNavigationBtn.textContent = navOn ? 'Hide Navigation' : 'Show Navigation';
+          quickNavigationBtn.style.background = '#111';
+          quickNavigationBtn.style.color = '#fff';
+          quickNavigationBtn.style.webkitTextFillColor = quickNavigationBtn.style.color;
+          quickNavigationBtn.style.pointerEvents = 'auto';
+        }
+      }catch(e){ console.warn('Label/navigation controls sync failed:', e); }
+    }
+
+    function hvToggleInfoLabels(ev){
+      try{
+        if(ev){ ev.preventDefault(); ev.stopPropagation(); }
+        const current = !!((typeof infoLabelsEnabled !== 'undefined') ? infoLabelsEnabled : false);
+        infoLabelsEnabled = !current;
+        if(typeof showLabelsToggle !== 'undefined' && showLabelsToggle) showLabelsToggle.checked = !!infoLabelsEnabled;
+        console.log('HomeView info labels ->', !!infoLabelsEnabled);
+        renderSelectionLabels();
+        try{ if(typeof hvApplyLabelEntityVisibility === 'function') hvApplyLabelEntityVisibility(); }catch(_){}
+        syncQuickShowLabelsButton();
+        requestSceneRenderBurst(6);
+      }catch(e){ console.warn('Labels toggle failed:', e); }
+      return false;
+    }
+    function hvToggleNavigationLabels(ev){
+      try{
+        if(ev){ ev.preventDefault(); ev.stopPropagation(); }
+        const current = !!((typeof navigationLabelsEnabled !== 'undefined') ? navigationLabelsEnabled : true);
+        navigationLabelsEnabled = !current;
+        console.log('HomeView navigation labels ->', !!navigationLabelsEnabled);
+        renderSelectionLabels();
+        try{ if(typeof hvApplyLabelEntityVisibility === 'function') hvApplyLabelEntityVisibility(); }catch(_){}
+        syncQuickShowLabelsButton();
+        requestSceneRenderBurst(6);
+      }catch(e){ console.warn('Navigation toggle failed:', e); }
+      return false;
+    }
+
+    
+    if(!window.__hvLabelNavGlobalClickInstalled){
+      window.__hvLabelNavGlobalClickInstalled = true;
+      document.addEventListener('click', function(ev){
+        try{
+          const t = ev && ev.target ? ev.target.closest && ev.target.closest('#quickShowLabelsBtn,#quickNavigationBtn') : null;
+          if(!t) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+
+          if(t.id === 'quickShowLabelsBtn'){
+            infoLabelsEnabled = !((typeof infoLabelsEnabled !== 'undefined') ? !!infoLabelsEnabled : false);
+            if(typeof showLabelsToggle !== 'undefined' && showLabelsToggle) showLabelsToggle.checked = !!infoLabelsEnabled;
+            console.log('HomeView Show/Hide Labels clicked ->', !!infoLabelsEnabled);
+          }else if(t.id === 'quickNavigationBtn'){
+            navigationLabelsEnabled = !((typeof navigationLabelsEnabled !== 'undefined') ? !!navigationLabelsEnabled : true);
+            console.log('HomeView Show/Hide Navigation clicked ->', !!navigationLabelsEnabled);
+          }
+
+          renderSelectionLabels();
+          // Apply visibility defensively. Some generated builds placed
+          // hvApplyLabelEntityVisibility in a later/nested scope, which made
+          // the external Show/Hide buttons throw a ReferenceError.
+          try{
+            if(typeof hvApplyLabelEntityVisibility === 'function'){
+              hvApplyLabelEntityVisibility();
+            }else{
+              const labelsOn = !!((typeof infoLabelsEnabled !== 'undefined') ? infoLabelsEnabled : false);
+              const navOn = !!((typeof navigationLabelsEnabled !== 'undefined') ? navigationLabelsEnabled : true);
+              const list = (typeof labelEditorState !== 'undefined' && labelEditorState && Array.isArray(labelEditorState.entities)) ? labelEditorState.entities : [];
+              list.forEach(function(ent){
+                try{
+                  const kind = ent && ent.properties && ent.properties.hvLabelKind && ent.properties.hvLabelKind.getValue
+                    ? String(ent.properties.hvLabelKind.getValue() || '')
+                    : '';
+                  const shouldShow = kind === 'navigation' ? navOn : labelsOn;
+                  ent.show = shouldShow;
+                  if(ent.label) ent.label.show = shouldShow;
+                }catch(_){}
+              });
+            }
+          }catch(e){ console.warn('visibility apply fallback:', e); }
+          syncQuickShowLabelsButton();
+          requestSceneRenderBurst(6);
+        }catch(e){
+          console.warn('HomeView labels/navigation global click failed:', e);
+        }
+      }, true);
+    }
+
   const showFutureProjectsToggle = header.querySelector('#showFutureProjectsToggle');
   const editLabelsBtn = labelToolsCard.querySelector('#editLabelsBtn');
   const labelEditorBody = labelToolsCard.querySelector('#labelEditorBody');
@@ -4451,6 +4690,216 @@ async function refreshFutureProjects(bIdx){
       if(!options.silent) requestSceneRenderBurst(4);
     }
 
+    const activeRoomModelState = { key:'', currentRoomKey:'__base__', handle:null, cache:new Map(), token:0, lastBlobUrl:null };
+
+    function getActiveRoomContextKey(){
+      try{
+        if(activeRoomModelState && activeRoomModelState.currentRoomKey){
+          return hvSlugifyRoomKey(activeRoomModelState.currentRoomKey);
+        }
+      }catch(_){}
+      return '__base__';
+    }
+    function normalizeLabelRoomKey(v){
+      const raw = String(v || '').trim();
+      const s = raw.toLowerCase().replace(/[^a-z0-9]+/g,'');
+      if(!s || s === 'base' || s === 'main' || s === 'original' || s === 'default' || s === 'living' || s === 'livingroom' || s === 'livingarea' || s === 'lounge' || raw === '__base__') return '__base__';
+      return hvSlugifyRoomKey(raw);
+    }
+    function labelBelongsToActiveRoom(it){
+      const active = normalizeLabelRoomKey(getActiveRoomContextKey());
+      const rk = normalizeLabelRoomKey(it && it.roomKey);
+      return rk === active;
+    }
+    function getRoomContextDisplayName(){
+      const active = normalizeLabelRoomKey(getActiveRoomContextKey());
+      return active === '__base__' ? 'main model' : active.replace(/_/g, ' ');
+    }
+
+    function clearActiveRoomModel(options){
+      const keepCache = !!(options && options.keepCache);
+      activeRoomModelState.token += 1;
+      if(activeRoomModelState.handle){
+        try{ activeRoomModelState.handle.show = false; }catch(_){ }
+        try{ if(activeRoomModelState.handle.anchorEntity) viewer.entities.remove(activeRoomModelState.handle.anchorEntity); }catch(_){ }
+        try{ if(activeRoomModelState.handle.modelPrimitive) viewer.scene.primitives.remove(activeRoomModelState.handle.modelPrimitive); }catch(_){ }
+        try{ if(activeRoomModelState.handle.destroy) activeRoomModelState.handle.destroy(); }catch(_){ }
+      }
+      activeRoomModelState.key = '';
+      activeRoomModelState.currentRoomKey = '__base__';
+      activeRoomModelState.handle = null;
+      try{ renderSelectionLabels(); syncQuickShowLabelsButton(); }catch(_){ }
+      if(!keepCache){
+        try{ activeRoomModelState.cache.forEach(function(v){ if(v && v.blobUrl) URL.revokeObjectURL(v.blobUrl); }); }catch(_){ }
+        activeRoomModelState.cache.clear();
+      }
+      requestSceneRenderBurst(4);
+    }
+    
+    async function returnToBaseRoomModelForCurrent(){
+      try{
+        const sel = activeInteriorSelection;
+        if(!sel) return false;
+        if(activeRoomModelState.handle){
+          try{ activeRoomModelState.handle.show = false; }catch(_){ }
+          try{ if(activeRoomModelState.handle.anchorEntity) viewer.entities.remove(activeRoomModelState.handle.anchorEntity); }catch(_){ }
+          try{ if(activeRoomModelState.handle.modelPrimitive) viewer.scene.primitives.remove(activeRoomModelState.handle.modelPrimitive); }catch(_){ }
+          try{ if(activeRoomModelState.handle.destroy) activeRoomModelState.handle.destroy(); }catch(_){ }
+        }
+        activeRoomModelState.key = '';
+        activeRoomModelState.currentRoomKey = '__base__';
+        activeRoomModelState.handle = null;
+        try{ if(activeRoomModelState.lastBlobUrl) URL.revokeObjectURL(activeRoomModelState.lastBlobUrl); }catch(_){ }
+        activeRoomModelState.lastBlobUrl = null;
+        const baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
+        if(baseHandle){
+          try{ baseHandle.show = true; }catch(_){}
+          try{ if(baseHandle.anchorEntity) baseHandle.anchorEntity.show = true; }catch(_){}
+          try{ if(baseHandle.modelPrimitive) baseHandle.modelPrimitive.show = true; }catch(_){}
+        }
+        try{
+          const meta = (interiorMetaByBuilding[sel.bIdx] || [])[sel.itemIdx] || {};
+          const buildingRow = b[sel.bIdx] || {};
+          title.textContent = (buildingRow.name||'') + ' — ' + getItemDisplayName(meta, 'Unit');
+          currentMode = 'interior';
+          try{ mini.hide(); }catch(_){ }
+          setCesiumGroundVisible(true);
+          setCameraCollision(false);
+          setInteriorMouseBindings();
+          interiorNav.enable();
+          setJoystickVisible(cameraJoystickEnabledByUser);
+        }catch(_){}
+        try{ hvEnsureCurrentLabelSelectionForActiveInterior(); renderSelectionLabels(); syncQuickShowLabelsButton(); }catch(_){}
+        requestSceneRenderBurst(8);
+        return true;
+      }catch(err){
+        console.warn('Return to base room failed:', err);
+        return false;
+      }
+    }
+
+async function applyRoomModelForCurrent(actionValue){
+      const sel = activeInteriorSelection;
+      if(!sel || sel.bIdx == null || sel.itemIdx == null) return false;
+
+      const cleanActionValue = String(actionValue || '').split('|')[0].trim();
+      const requestedRoomKey = normalizeLabelRoomKey(cleanActionValue);
+      try{ console.log('HomeView room action:', actionValue, 'clean:', cleanActionValue, '=>', requestedRoomKey); }catch(_){}
+
+      if(requestedRoomKey === '__base__'){
+        return await returnToBaseRoomModelForCurrent();
+      }
+
+      const meta = (interiorMetaByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
+      const buildingRow = b[sel.bIdx] || {};
+      const room = getRoomModelItem(meta, buildingRow, cleanActionValue);
+
+      if(!room || !room.url){
+        console.warn('HomeView room model not found:', cleanActionValue, parseRoomModelItems(meta, buildingRow));
+        try{ labelEditorStatus.textContent = 'Room model not found: ' + String(cleanActionValue || actionValue || ''); }catch(_){ }
+        return false;
+      }
+
+      const token = ++activeRoomModelState.token;
+      await showSceneTransition('Loading ' + (room.label || 'room') + '...');
+      beginViewLoad('Loading ' + (room.label || 'room') + '...');
+      try{
+        // Hide base/original unit model.
+        const baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
+        if(baseHandle){
+          try{ baseHandle.show = false; }catch(_){}
+          try{ if(baseHandle.anchorEntity) baseHandle.anchorEntity.show = false; }catch(_){}
+          try{ if(baseHandle.modelPrimitive) baseHandle.modelPrimitive.show = false; }catch(_){}
+        }
+
+        // Destroy previous active room model. Do NOT reuse destroyed handles.
+        if(activeRoomModelState.handle){
+          try{ activeRoomModelState.handle.show = false; }catch(_){ }
+          try{ if(activeRoomModelState.handle.anchorEntity) viewer.entities.remove(activeRoomModelState.handle.anchorEntity); }catch(_){ }
+          try{ if(activeRoomModelState.handle.modelPrimitive) viewer.scene.primitives.remove(activeRoomModelState.handle.modelPrimitive); }catch(_){ }
+          try{ if(activeRoomModelState.handle.destroy) activeRoomModelState.handle.destroy(); }catch(_){ }
+          activeRoomModelState.handle = null;
+        }
+
+        const blobUrl = await fetchModelBlobUrl(room.url, IS_MOBILE ? 26000 : 32000).catch(function(e){
+          throw new Error('Could not fetch room model "' + (room.key || room.label || '') + '" from URL: ' + room.url + ' — ' + (e && e.message ? e.message : e));
+        });
+        if(token !== activeRoomModelState.token){
+          try{ URL.revokeObjectURL(blobUrl); }catch(_){ }
+          return true;
+        }
+
+        const roomRow = Object.assign({}, meta || {});
+        roomRow.model_url = room.url;
+        roomRow.unit_name = room.label || room.key || getItemDisplayName(meta, 'Room');
+        roomRow.name = roomRow.unit_name;
+        if(hasTextValue(room.heading)) roomRow.heading = room.heading;
+
+        const handle = await createInteriorModel(buildingRow, roomRow, viewer, blobUrl, null, null);
+        if(token !== activeRoomModelState.token){
+          try{ if(handle && handle.anchorEntity) viewer.entities.remove(handle.anchorEntity); }catch(_){}
+          try{ if(handle && handle.modelPrimitive) viewer.scene.primitives.remove(handle.modelPrimitive); }catch(_){}
+          try{ URL.revokeObjectURL(blobUrl); }catch(_){}
+          return true;
+        }
+
+        activeRoomModelState.key = sel.bIdx + ':' + sel.itemIdx + ':' + (room.key || cleanActionValue);
+        activeRoomModelState.currentRoomKey = hvSlugifyRoomKey(room.key || room.label || cleanActionValue);
+        activeRoomModelState.handle = handle;
+        activeRoomModelState.lastBlobUrl = blobUrl;
+
+        if(handle){
+          try{ handle.show = true; }catch(_){}
+          try{ if(handle.anchorEntity) handle.anchorEntity.show = true; }catch(_){}
+          try{ if(handle.modelPrimitive) handle.modelPrimitive.show = true; }catch(_){}
+        }
+
+        try{ title.textContent = (buildingRow.name||'') + ' — ' + getItemDisplayName(meta, '') + ' — ' + (room.label || room.key || 'Room'); }catch(_){ }
+        try{
+          currentMode = 'interior';
+          try{ mini.hide(); }catch(_){ }
+          setCesiumGroundVisible(true);
+          setCameraCollision(false);
+          setInteriorMouseBindings();
+          interiorNav.enable();
+          setJoystickVisible(cameraJoystickEnabledByUser);
+        }catch(_){ }
+
+        try{
+          hvEnsureCurrentLabelSelectionForActiveInterior();
+          renderSelectionLabels();
+          syncQuickShowLabelsButton();
+          labelEditorStatus.textContent = 'Room model active: ' + (room.label || room.key || 'Room') + '.';
+        }catch(_){ }
+
+        requestSceneRenderBurst(10);
+        return true;
+      }catch(err){
+        console.warn('Room model load failed:', err);
+        try{ labelEditorStatus.textContent = 'Could not load room model. Check URL/key: ' + cleanActionValue; }catch(_){ }
+
+        // Restore base model if room loading failed.
+        try{
+          const baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
+          if(baseHandle){
+            try{ baseHandle.show = true; }catch(_){}
+            try{ if(baseHandle.anchorEntity) baseHandle.anchorEntity.show = true; }catch(_){}
+            try{ if(baseHandle.modelPrimitive) baseHandle.modelPrimitive.show = true; }catch(_){}
+          }
+          activeRoomModelState.currentRoomKey = '__base__';
+          activeRoomModelState.key = '';
+          activeRoomModelState.handle = null;
+          renderSelectionLabels();
+          syncQuickShowLabelsButton();
+        }catch(_){}
+        return false;
+      }finally{
+        endViewLoad();
+        hideSceneTransition().catch(function(){});
+      }
+    }
+
+
     reloadActiveInteriorForModelQuality = async function(){
       try{
         if(!activeInteriorSelection){ requestSceneRenderBurst(4); return; }
@@ -5622,17 +6071,14 @@ function fmtMoneyNoDash(n){
       }
 
       function showPlanForUnit(bIdx,uIdx,uRow){
-        const url=uRow.unit_plan_image_url||uRow.plan_image_url||uRow.plan_img_url||uRow.floorplan_url||uRow.plan_url||uRow.unit_map_image_url;
-        if(!url){ setMode('city'); return; }
-        ps={url:url,rot:Number(uRow.plan_rotation_deg||uRow.plan_rot_deg||uRow.plan_deg||uRow.plan_rotation)||0,w:Number(uRow.plan_width_m||uRow.unit_plan_width_m)||10,h:Number(uRow.plan_height_m||uRow.unit_plan_height_m)||10,cE:Number(uRow.plan_center_e_m||uRow.plan_center_east_m||uRow.plan_center_e)||0,cN:Number(uRow.plan_center_n_m||uRow.plan_center_north_m||uRow.plan_center_n)||0,nw:0,nh:0,zoom:1,ready:false,u:uIdx,b:bIdx};
-        planImg.onload=()=>{ ps.nw=planImg.naturalWidth; ps.nh=planImg.naturalHeight; ps.ready=true; layoutPlan(); updatePlanCam(); };
-        planImg.onerror=()=>{ setMode('city'); };
-        planImg.src=url;
-        setMode('plan'); layoutPlan(); updatePlanCam();
+        // Floorplan/minimap inside unit view has been retired.
+        // Minimap is now reserved for Building View city map only.
+        setMode('city');
+        root.style.display = 'none';
       }
 
       let raf=false;
-      viewer.camera.changed.addEventListener(()=>{ if(planDiv.style.display!=='block'){ updateCityCamera(); return; } if(!raf){ raf=true; requestAnimationFrame(()=>{ raf=false; updatePlanCam(); }); }});
+      viewer.camera.changed.addEventListener(()=>{ if(root.style.display==='block' && cityDiv.style.display==='block') updateCityCamera(); });
       map.on('click',e=>{ try{ const h=viewer.camera.positionCartographic.height; viewer.camera.flyTo({destination:Cesium.Cartesian3.fromDegrees(e.latlng.lng,e.latlng.lat,h), duration:0.6}); }catch(err){} });
 
       const zb=document.createElement('div'); zb.style.cssText="position:absolute;right:6px;bottom:6px;display:flex;flex-direction:column;gap:6px;z-index:50"; stage.appendChild(zb);
@@ -5643,10 +6089,10 @@ function fmtMoneyNoDash(n){
 
       return {
         root,
-        show(){ root.style.display = minimapEnabledByUser ? 'block' : 'none'; },
+        show(){ root.style.display = (minimapEnabledByUser && currentMode === 'exterior') ? 'block' : 'none'; },
         hide(){ root.style.display='none'; },
         setMode,
-        setPane(pane){ if(pane === 'ai'){ setAiAdvisorOpen(true); return; } setMode(pane === 'plan' ? 'plan' : 'city'); },
+        setPane(pane){ if(pane === 'ai'){ setAiAdvisorOpen(true); return; } setMode('city'); },
         showAI(){ setAiAdvisorOpen(true); },
         showMap(){ setMode('city'); },
         refreshCity(idx){
@@ -5699,6 +6145,7 @@ function fmtMoneyNoDash(n){
       cache: new Map(),
       entities: []
     };
+    navigationLabelsEnabled = true;
 
     function getSelectionBaseKey(sel){
       if(!sel || sel.isExterior) return '';
@@ -5726,14 +6173,16 @@ function fmtMoneyNoDash(n){
         const scale = Number(bits[2]);
         const color = (bits[3]||'#00ff88').trim() || '#00ff88';
         const actionType = String(bits[4] || 'none').trim() || 'none';
-        const actionValue = String(bits.slice(5).join('|') || '').trim();
+        const actionValue = String(bits[5] || '').trim();
+        const roomKey = String(bits[6] || '').trim();
         return {
           text:text||'Label',
           x, y, z,
           scale:Number.isFinite(scale)&&scale>0?scale:1,
           color,
           actionType,
-          actionValue
+          actionValue,
+          roomKey
         };
       }).filter(Boolean);
     }
@@ -5743,14 +6192,17 @@ function fmtMoneyNoDash(n){
         const y = Number(it.y||0).toFixed(2).replace(/\.00$/,'');
         const z = Number(it.z||0).toFixed(2).replace(/\.00$/,'');
         const sc = Number(it.scale||1).toFixed(2).replace(/\.00$/,'');
-        return [
+        const roomKey = String(it.roomKey || '').replace(/[;|]/g,' ').trim();
+        const arr = [
           String(it.text||'Label').replace(/[;|]/g,' ').trim(),
           [x,y,z].join(','),
           sc,
           it.color||'#00ff88',
           String(it.actionType||'none').replace(/[;|]/g,' ').trim() || 'none',
           String(it.actionValue||'').replace(/[;]/g,' ').trim()
-        ].join('|');
+        ];
+        if(roomKey) arr.push(roomKey);
+        return arr.join('|');
       }).join('; ');
     }
     function normalizeLabelColor(v){
@@ -5805,7 +6257,8 @@ function fmtMoneyNoDash(n){
           scale:(Number(it.scale)>0?Number(it.scale):1),
           color:it.color||'#00ff88',
           actionType:String(it.actionType || 'none'),
-          actionValue:String(it.actionValue || '')
+          actionValue:String(it.actionValue || ''),
+          roomKey:normalizeLabelRoomKey(it.roomKey || '')
         };
       });
       labelEditorState.cache.set(key, clean);
@@ -5872,7 +6325,13 @@ function fmtMoneyNoDash(n){
     }
     function getSelectionAnchor(sel){
       if(!sel || sel.isExterior) return null;
-      const ent = (interiorEntitiesByBuilding[sel.bIdx]||[])[sel.itemIdx] || null;
+      let ent = null;
+      try{
+        if(activeRoomModelState && activeRoomModelState.handle && activeRoomModelState.handle.modelPrimitive){
+          ent = activeRoomModelState.handle.anchorEntity || activeRoomModelState.handle;
+        }
+      }catch(_){ }
+      if(!ent) ent = (interiorEntitiesByBuilding[sel.bIdx]||[])[sel.itemIdx] || null;
       let pos = null, q = null;
       const now = Cesium.JulianDate.now();
       if(ent && ent.position){
@@ -5901,36 +6360,95 @@ function fmtMoneyNoDash(n){
     function updatePanoramaLabelUiHints(){
       const sel = labelEditorState.currentSelection;
       const isPano = !!(sel && sel.meta && isPanoramaRow(sel.meta));
-      if(labelActionValueInput) labelActionValueInput.placeholder = isPano ? 'e.g. kitchen' : '';
-      if(labelCurrentSceneHint) labelCurrentSceneHint.style.display = isPano ? 'block' : 'none';
+      const roomItems = (sel && sel.meta) ? parseRoomModelItems(sel.meta, sel.row) : [];
+      const actionType = labelActionTypeSelect ? String(labelActionTypeSelect.value || 'none') : 'none';
       if(labelActionValueList) labelActionValueList.innerHTML = '';
-      if(!isPano){
-        if(labelCurrentSceneHint) labelCurrentSceneHint.textContent = 'Current panorama scene: —';
-        return;
+      if(actionType === 'open_panorama'){
+        if(labelActionValueInput) labelActionValueInput.placeholder = 'e.g. kitchen';
+      }else if(actionType === 'open_room_model'){
+        if(labelActionValueInput) labelActionValueInput.placeholder = roomItems.length ? 'e.g. ' + roomItems[0].key : 'room key from room_model_items';
+      }else{
+        if(labelActionValueInput) labelActionValueInput.placeholder = '';
       }
-      const active = getActivePanoramaItemForSelection(sel);
-      if(labelCurrentSceneHint) labelCurrentSceneHint.textContent = 'Current panorama scene: ' + (active ? (active.title || active.key) : '—');
-      const cfg = getPanoramaConfig(sel.meta, sel.row);
-      (cfg.items || []).forEach(function(it){
-        const op = document.createElement('option');
-        op.value = String(it.key || it.title || '');
-        op.label = String(it.title || it.key || '');
-        labelActionValueList.appendChild(op);
-      });
+      if(labelCurrentSceneHint) labelCurrentSceneHint.style.display = (isPano || roomItems.length) ? 'block' : 'none';
+      if(isPano){
+        const active = getActivePanoramaItemForSelection(sel);
+        if(labelCurrentSceneHint) labelCurrentSceneHint.textContent = 'Current panorama scene: ' + (active ? (active.title || active.key) : '—');
+        const cfg = getPanoramaConfig(sel.meta, sel.row);
+        (cfg.items || []).forEach(function(it){
+          const op = document.createElement('option');
+          op.value = String(it.key || it.title || '');
+          op.label = String(it.title || it.key || '');
+          labelActionValueList.appendChild(op);
+        });
+      }else if(roomItems.length){
+        if(labelCurrentSceneHint) labelCurrentSceneHint.textContent = 'Available room models: ' + roomItems.map(function(it){ return it.label + ' (' + it.key + ')'; }).join(', ');
+        roomItems.forEach(function(it){
+          const op = document.createElement('option');
+          op.value = String(it.key || '');
+          op.label = String(it.label || it.key || '');
+          labelActionValueList.appendChild(op);
+        });
+      }else{
+        if(labelCurrentSceneHint) labelCurrentSceneHint.textContent = 'Current panorama scene: —';
+      }
     }
 
-    function renderSelectionLabels(){
+    
+    function hvIsNavigationLabelItem(it){
+      const actionType = String(it && it.actionType || 'none').trim();
+      return !!(actionType && actionType !== 'none');
+    }
+    function hvApplyLabelEntityVisibility(){
+      try{
+        const labelsOn = !!((typeof infoLabelsEnabled !== 'undefined') ? infoLabelsEnabled : false);
+        const navOn = !!((typeof navigationLabelsEnabled !== 'undefined') ? navigationLabelsEnabled : true);
+        (labelEditorState.entities || []).forEach(function(ent){
+          try{
+            const kind = ent && ent.properties && ent.properties.hvLabelKind && ent.properties.hvLabelKind.getValue
+              ? String(ent.properties.hvLabelKind.getValue() || '')
+              : '';
+            const shouldShow = kind === 'navigation' ? navOn : labelsOn;
+            ent.show = shouldShow;
+            if(ent.label) ent.label.show = shouldShow;
+          }catch(_){}
+        });
+        requestSceneRenderBurst(3);
+      }catch(e){ console.warn('Apply label entity visibility failed:', e); }
+    }
+    // Compatibility aliases for previous generated typos.
+    var hvApplyLabelEntityVisiibility = hvApplyLabelEntityVisibility;
+    var hvApplyLabelEntityVisiblity = hvApplyLabelEntityVisibility;
+
+
+
+    // Compatibility alias for older generated builds / typos.
+function renderSelectionLabels(){
       clearRenderedLabels();
-      const sel = labelEditorState.currentSelection;
-      if(!sel || sel.isExterior || !showLabelsToggle.checked) return;
+
+      const sel = (typeof hvEnsureCurrentLabelSelectionForActiveInterior === 'function'
+        ? hvEnsureCurrentLabelSelectionForActiveInterior()
+        : null) || labelEditorState.currentSelection;
+
+      if(!sel || sel.isExterior) return;
       const anchor = getSelectionAnchor(sel); if(!anchor) return;
-      const items = getCurrentSelectionLabels();
+
+      // Render all labels for the active room, then direct-apply visibility by kind.
+      // This makes the external buttons reliable even without opening the editor.
+      const items = getCurrentSelectionLabels().filter(function(it){
+        if(typeof labelBelongsToActiveRoom === 'function' && !labelBelongsToActiveRoom(it)) return false;
+        return true;
+      });
+
       items.forEach(function(it){
+        const isNav = hvIsNavigationLabelItem(it);
+        const kind = isNav ? 'navigation' : 'info';
         const local = new Cesium.Cartesian3(Number(it.x)||0, Number(it.y)||0, Number(it.z)||0);
         const world = Cesium.Matrix4.multiplyByPoint(anchor.matrix, local, new Cesium.Cartesian3());
         const col = Cesium.Color.fromCssColorString(it.color||'#00ff88');
         const e = viewer.entities.add({
           position: world,
+          show: kind === 'navigation' ? !!navigationLabelsEnabled : !!infoLabelsEnabled,
           label: {
             text: String(it.text||'Label'),
             font: Math.max(14, Math.round((Number(it.scale)||1)*18)) + 'px sans-serif',
@@ -5942,16 +6460,19 @@ function fmtMoneyNoDash(n){
             verticalOrigin: Cesium.VerticalOrigin.CENTER,
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
             distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, getLabelMaxViewDistanceM(sel)),
-            scale: 1.0
+            scale: 1.0,
+            show: kind === 'navigation' ? !!navigationLabelsEnabled : !!infoLabelsEnabled
           },
           properties: {
             hvLabelActionType: String(it.actionType || 'none'),
             hvLabelActionValue: String(it.actionValue || ''),
-            hvLabelText: String(it.text || 'Label')
+            hvLabelText: String(it.text || 'Label'),
+            hvLabelKind: kind
           }
         });
         labelEditorState.entities.push(e);
       });
+      hvApplyLabelEntityVisibility();
     }
     refreshLabelListUI = function(){
       const items = getCurrentSelectionLabels();
@@ -5970,7 +6491,8 @@ function fmtMoneyNoDash(n){
         const actionNote = (it.actionType && it.actionType !== 'none')
           ? (' • action ' + it.actionType + (it.actionValue ? ' → ' + it.actionValue : ''))
           : '';
-        btn.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div style="font-weight:600">'+(it.text||('Label '+(idx+1)))+'</div><div style="width:14px;height:14px;border-radius:999px;border:1px solid #bbb;flex:0 0 auto;background:'+(it.color||'#00ff88')+'"></div></div><div style="font-size:12px;opacity:.8">x '+Number(it.x).toFixed(2)+' • y '+Number(it.y).toFixed(2)+' • z '+Number(it.z).toFixed(2)+' • scale '+Number(it.scale||1).toFixed(2)+ actionNote +'</div>';
+        const roomNote = it.roomKey ? (' • room ' + it.roomKey) : ' • room main';
+        btn.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><div style="font-weight:600">'+(it.text||('Label '+(idx+1)))+'</div><div style="width:14px;height:14px;border-radius:999px;border:1px solid #bbb;flex:0 0 auto;background:'+(it.color||'#00ff88')+'"></div></div><div style="font-size:12px;opacity:.8">x '+Number(it.x).toFixed(2)+' • y '+Number(it.y).toFixed(2)+' • z '+Number(it.z).toFixed(2)+' • scale '+Number(it.scale||1).toFixed(2)+ actionNote + roomNote +'</div>';
         btn.onclick=function(){
           labelEditorState.selectedLabelIndex = idx;
           labelTextInput.value = it.text||'';
@@ -5996,6 +6518,7 @@ function fmtMoneyNoDash(n){
       if(headerLabelsWrap) headerLabelsWrap.style.display = 'none';
 
       updateAdminEditorButtonsVisibility();
+      syncQuickShowLabelsButton();
       labelToolsCard.style.display = (usable && admin && labelEditorPanelOpen) ? 'flex' : 'none';
       adminUnitEditorCard.style.display = (usable && admin && descriptionEditorPanelOpen) ? 'flex' : 'none';
       try{
@@ -6033,7 +6556,7 @@ function fmtMoneyNoDash(n){
       refreshLabelListUI();
     }
     showLabelsToggle.checked = false;
-    showLabelsToggle.addEventListener('change', function(){ renderSelectionLabels(); });
+    showLabelsToggle.addEventListener('change', function(){ infoLabelsEnabled = !!showLabelsToggle.checked; renderSelectionLabels(); hvApplyLabelEntityVisibility(); syncQuickShowLabelsButton(); });
     labelDistanceRange.addEventListener('input', function(){
       const sel = labelEditorState.currentSelection;
       const v = Math.min(50, Math.max(0.5, Number(labelDistanceRange.value)||8));
@@ -6113,6 +6636,11 @@ function fmtMoneyNoDash(n){
     };
     function getActiveInteriorHandleForLabelPlacement(){
       if(!activeInteriorSelection) return null;
+      try{
+        if(activeRoomModelState && activeRoomModelState.handle && activeRoomModelState.handle.modelPrimitive){
+          return activeRoomModelState.handle;
+        }
+      }catch(_){ }
       const arr = interiorEntitiesByBuilding[activeInteriorSelection.bIdx] || [];
       return arr[activeInteriorSelection.itemIdx] || null;
     }
@@ -6169,7 +6697,8 @@ function fmtMoneyNoDash(n){
         scale: Number(labelScaleInput.value)>0 ? Number(labelScaleInput.value) : 1,
         color: normalizeLabelColor(labelColorInput && labelColorInput.value),
         actionType: String(labelActionTypeSelect && labelActionTypeSelect.value || 'none').trim() || 'none',
-        actionValue: String(labelActionValueInput && labelActionValueInput.value || '').trim()
+        actionValue: String(labelActionValueInput && labelActionValueInput.value || '').trim(),
+        roomKey: normalizeLabelRoomKey(getActiveRoomContextKey())
       };
       if(idx>=0 && idx<items.length){ items[idx] = item; }
       else { items.push(item); labelEditorState.selectedLabelIndex = items.length-1; }
@@ -6490,6 +7019,9 @@ if(saveLabelsBtn){
       if(actionType === 'open_panorama'){
         return await applyPanoramaSelectionForCurrent(actionValue);
       }
+      if(actionType === 'open_room_model'){
+        return await applyRoomModelForCurrent(actionValue);
+      }
       return false;
     }
 
@@ -6797,13 +7329,17 @@ function hideUnitMetaUI(){
       }
       setCesiumGroundVisible(!selectedIsPanorama);
       if(selectedIsPanorama){
-        showLabelsToggle.checked = true;
+        navigationLabelsEnabled = true;
+        infoLabelsEnabled = false;
+        showLabelsToggle.checked = false;
       }
       if(isExterior || selectedIsAmenity || !selectedMeta || (selectedKind!=='unit' && selectedKind!=='panorama')){
         unitViewsState.lastTrackedKey = '';
       }
       currentMode = isExterior ? 'exterior' : (selectedIsPanorama ? 'panorama' : (selectedIsAmenity ? 'amenity' : 'interior'));
+      try{ syncQuickShowLabelsButton(); }catch(_){ }
       labelEditorState.currentSelection = { bIdx: idx, kind: selectedKind, itemIdx: selectedIndex, meta: selectedMeta, row: row, isExterior: isExterior };
+      try{ syncQuickShowLabelsButton(); }catch(_){ }
 
       const thisSwitchToken = ++interiorSwitchToken;
       const hasRealModel = !!selectedMeta && isLikelyModelUrl(selectedMeta.model_url);
@@ -6811,6 +7347,7 @@ function hideUnitMetaUI(){
       const useUnitExteriorReveal = wantsInteriorModel && selectedKind === 'unit' && hasExteriorMarkerConfig(selectedMeta);
 
       stopCameraTracking();
+      clearActiveRoomModel({ keepCache:true });
       if(!useUnitExteriorReveal) clearSelectedUnitExteriorMarker();
       modelEntities.forEach((ent,i)=> ent.show=(i===idx)&&(isExterior || useUnitExteriorReveal));
       destroyNonActiveInteriorEntities(wantsInteriorModel ? { bIdx: idx, itemIdx: selectedIndex } : null);
@@ -6818,6 +7355,10 @@ function hideUnitMetaUI(){
       let activeInteriorEntity = null;
       if(wantsInteriorModel){
         activeInteriorSelection = { bIdx: idx, itemIdx: selectedIndex };
+        navigationLabelsEnabled = true;
+        infoLabelsEnabled = false;
+        showLabelsToggle.checked = false;
+        try{ syncQuickShowLabelsButton(); }catch(_){ }
         title.textContent = (row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '') + ' (loading...)';
         beginViewLoad(useUnitExteriorReveal ? 'Locating selected unit...' : 'Loading selected model...');
         didBeginLoad = true;
@@ -7130,8 +7671,7 @@ function hideUnitMetaUI(){
           loanPrice.value = Number.isFinite(autoPrice) && autoPrice>0 ? String(autoPrice) : '';
           recalcLoan();
 
-          mini.show();
-          mini.showPlanForUnit(idx,k,meta);
+          mini.hide();
           buildSimilarList(idx,k);
           renderInsights(idx,k);
           updateCommute(idx);
