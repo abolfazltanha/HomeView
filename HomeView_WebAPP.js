@@ -4692,6 +4692,37 @@ async function refreshFutureProjects(bIdx){
 
     const activeRoomModelState = { key:'', currentRoomKey:'__base__', handle:null, cache:new Map(), token:0, lastBlobUrl:null };
 
+    // Mobile memory policy:
+    // On phones/tablets, a hidden Cesium model can still keep its GPU buffers/textures alive.
+    // For room-to-room navigation we destroy the previous model instead of only hiding it.
+    // Desktop keeps the faster hidden-model behavior.
+    const HV_DESTROY_ROOM_MODELS_ON_SWITCH = !!IS_MOBILE;
+
+    function hvDestroyModelHandle(handle){
+      if(!handle) return;
+      try{ handle.show = false; }catch(_){ }
+      try{ if(handle.anchorEntity) viewer.entities.remove(handle.anchorEntity); }catch(_){ }
+      try{ if(handle.modelPrimitive) viewer.scene.primitives.remove(handle.modelPrimitive); }catch(_){ }
+      try{ if(handle.destroy) handle.destroy(); }catch(_){ }
+    }
+
+    function hvShowModelHandle(handle, visible){
+      if(!handle) return;
+      const show = !!visible;
+      try{ handle.show = show; }catch(_){ }
+      try{ if(handle.anchorEntity) handle.anchorEntity.show = show; }catch(_){ }
+      try{ if(handle.modelPrimitive) handle.modelPrimitive.show = show; }catch(_){ }
+    }
+
+    function hvReleaseRoomBlobUrl(){
+      try{
+        if(activeRoomModelState.lastBlobUrl){
+          URL.revokeObjectURL(activeRoomModelState.lastBlobUrl);
+          activeRoomModelState.lastBlobUrl = null;
+        }
+      }catch(_){ activeRoomModelState.lastBlobUrl = null; }
+    }
+
     function getActiveRoomContextKey(){
       try{
         if(activeRoomModelState && activeRoomModelState.currentRoomKey){
@@ -4720,11 +4751,9 @@ async function refreshFutureProjects(bIdx){
       const keepCache = !!(options && options.keepCache);
       activeRoomModelState.token += 1;
       if(activeRoomModelState.handle){
-        try{ activeRoomModelState.handle.show = false; }catch(_){ }
-        try{ if(activeRoomModelState.handle.anchorEntity) viewer.entities.remove(activeRoomModelState.handle.anchorEntity); }catch(_){ }
-        try{ if(activeRoomModelState.handle.modelPrimitive) viewer.scene.primitives.remove(activeRoomModelState.handle.modelPrimitive); }catch(_){ }
-        try{ if(activeRoomModelState.handle.destroy) activeRoomModelState.handle.destroy(); }catch(_){ }
+        hvDestroyModelHandle(activeRoomModelState.handle);
       }
+      hvReleaseRoomBlobUrl();
       activeRoomModelState.key = '';
       activeRoomModelState.currentRoomKey = '__base__';
       activeRoomModelState.handle = null;
@@ -4741,22 +4770,19 @@ async function refreshFutureProjects(bIdx){
         const sel = activeInteriorSelection;
         if(!sel) return false;
         if(activeRoomModelState.handle){
-          try{ activeRoomModelState.handle.show = false; }catch(_){ }
-          try{ if(activeRoomModelState.handle.anchorEntity) viewer.entities.remove(activeRoomModelState.handle.anchorEntity); }catch(_){ }
-          try{ if(activeRoomModelState.handle.modelPrimitive) viewer.scene.primitives.remove(activeRoomModelState.handle.modelPrimitive); }catch(_){ }
-          try{ if(activeRoomModelState.handle.destroy) activeRoomModelState.handle.destroy(); }catch(_){ }
+          hvDestroyModelHandle(activeRoomModelState.handle);
         }
         activeRoomModelState.key = '';
         activeRoomModelState.currentRoomKey = '__base__';
         activeRoomModelState.handle = null;
-        try{ if(activeRoomModelState.lastBlobUrl) URL.revokeObjectURL(activeRoomModelState.lastBlobUrl); }catch(_){ }
-        activeRoomModelState.lastBlobUrl = null;
-        const baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
-        if(baseHandle){
-          try{ baseHandle.show = true; }catch(_){}
-          try{ if(baseHandle.anchorEntity) baseHandle.anchorEntity.show = true; }catch(_){}
-          try{ if(baseHandle.modelPrimitive) baseHandle.modelPrimitive.show = true; }catch(_){}
+        hvReleaseRoomBlobUrl();
+        let baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
+        if(!baseHandle){
+          // On mobile the base/living model may have been destroyed to free GPU memory.
+          // Re-create it only when the user actually returns to it.
+          baseHandle = await hvTryEnsureInteriorEntityForMarker(sel.bIdx, sel.itemIdx);
         }
+        hvShowModelHandle(baseHandle, true);
         try{
           const meta = (interiorMetaByBuilding[sel.bIdx] || [])[sel.itemIdx] || {};
           const buildingRow = b[sel.bIdx] || {};
@@ -4804,22 +4830,23 @@ async function applyRoomModelForCurrent(actionValue){
       await showSceneTransition('Loading ' + (room.label || 'room') + '...');
       beginViewLoad('Loading ' + (room.label || 'room') + '...');
       try{
-        // Hide base/original unit model.
+        // Hide base/original unit model on desktop.
+        // Destroy it on mobile to free GPU memory before loading the next room.
         const baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
         if(baseHandle){
-          try{ baseHandle.show = false; }catch(_){}
-          try{ if(baseHandle.anchorEntity) baseHandle.anchorEntity.show = false; }catch(_){}
-          try{ if(baseHandle.modelPrimitive) baseHandle.modelPrimitive.show = false; }catch(_){}
+          if(HV_DESTROY_ROOM_MODELS_ON_SWITCH){
+            destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: false, silent: true });
+          }else{
+            hvShowModelHandle(baseHandle, false);
+          }
         }
 
         // Destroy previous active room model. Do NOT reuse destroyed handles.
         if(activeRoomModelState.handle){
-          try{ activeRoomModelState.handle.show = false; }catch(_){ }
-          try{ if(activeRoomModelState.handle.anchorEntity) viewer.entities.remove(activeRoomModelState.handle.anchorEntity); }catch(_){ }
-          try{ if(activeRoomModelState.handle.modelPrimitive) viewer.scene.primitives.remove(activeRoomModelState.handle.modelPrimitive); }catch(_){ }
-          try{ if(activeRoomModelState.handle.destroy) activeRoomModelState.handle.destroy(); }catch(_){ }
+          hvDestroyModelHandle(activeRoomModelState.handle);
           activeRoomModelState.handle = null;
         }
+        hvReleaseRoomBlobUrl();
 
         const blobUrl = await fetchModelBlobUrl(room.url, IS_MOBILE ? 26000 : 32000).catch(function(e){
           throw new Error('Could not fetch room model "' + (room.key || room.label || '') + '" from URL: ' + room.url + ' — ' + (e && e.message ? e.message : e));
@@ -4848,11 +4875,7 @@ async function applyRoomModelForCurrent(actionValue){
         activeRoomModelState.handle = handle;
         activeRoomModelState.lastBlobUrl = blobUrl;
 
-        if(handle){
-          try{ handle.show = true; }catch(_){}
-          try{ if(handle.anchorEntity) handle.anchorEntity.show = true; }catch(_){}
-          try{ if(handle.modelPrimitive) handle.modelPrimitive.show = true; }catch(_){}
-        }
+        hvShowModelHandle(handle, true);
 
         try{ title.textContent = (buildingRow.name||'') + ' — ' + getItemDisplayName(meta, '') + ' — ' + (room.label || room.key || 'Room'); }catch(_){ }
         try{
@@ -4880,12 +4903,10 @@ async function applyRoomModelForCurrent(actionValue){
 
         // Restore base model if room loading failed.
         try{
-          const baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
-          if(baseHandle){
-            try{ baseHandle.show = true; }catch(_){}
-            try{ if(baseHandle.anchorEntity) baseHandle.anchorEntity.show = true; }catch(_){}
-            try{ if(baseHandle.modelPrimitive) baseHandle.modelPrimitive.show = true; }catch(_){}
-          }
+          let baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
+          if(!baseHandle) baseHandle = await hvTryEnsureInteriorEntityForMarker(sel.bIdx, sel.itemIdx);
+          hvShowModelHandle(baseHandle, true);
+          hvReleaseRoomBlobUrl();
           activeRoomModelState.currentRoomKey = '__base__';
           activeRoomModelState.key = '';
           activeRoomModelState.handle = null;
