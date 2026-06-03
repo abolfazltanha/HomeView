@@ -5000,15 +5000,13 @@ async function refreshFutureProjects(bIdx){
 
     // Mobile memory policy:
     // On phones/tablets, a hidden Cesium model can still keep its GPU buffers/textures alive.
-    // For room-to-room navigation we destroy the previous model instead of only hiding it.
-    // Desktop keeps the faster hidden-model behavior.
-    const HV_DESTROY_ROOM_MODELS_ON_SWITCH = true; // keep one active room model, but destroy old GPU models after the new room is visible
+    // Desktop keeps the fast cached/hidden-model behavior.
+    // Mobile destroys the current GPU model BEFORE loading the next room, so Safari/iPhone does not hit
+    // the peak-memory moment where Living + Bedroom/Bathroom are both alive during Model.fromGltfAsync.
+    const HV_DESTROY_ROOM_MODELS_ON_SWITCH = IS_MOBILE;
+    const HV_PRE_DESTROY_ROOM_MODELS_BEFORE_LOAD = IS_MOBILE;
     let activeRoomModelLoading = false;
-    const HV_ROOM_LOAD_PROFILING = true;
-    // v54: Mobile Safari/WebGL needs a stricter memory policy than desktop.
-    // Desktop works best with v53 load-new-then-cleanup. On mobile, briefly holding
-    // Google 3D Tiles + base/living + next room can crash even high-end iPhones.
-    const HV_MOBILE_SAFE_ROOM_LOADING = !!(IS_MOBILE || IS_IOS);
+    const HV_ROOM_LOAD_PROFILING = false;
 
     function hvRoomPerf(label, startTime){
       try{
@@ -5161,9 +5159,7 @@ async function refreshFutureProjects(bIdx){
           title.textContent = (buildingRow.name||'') + ' — ' + getItemDisplayName(meta, 'Unit');
           currentMode = 'interior';
           try{ mini.hide(); }catch(_){ }
-          // v54: keep Google Photorealistic 3D Tiles off during interiors on mobile.
-          // The city tiles are useful outside, but they compete for GPU memory during room navigation.
-          setCesiumGroundVisible(HV_MOBILE_SAFE_ROOM_LOADING ? false : true);
+          setCesiumGroundVisible(true);
           setCameraCollision(false);
           setInteriorMouseBindings();
           interiorNav.enable();
@@ -5219,23 +5215,22 @@ async function applyRoomModelForCurrent(actionValue){
         const previousRoomHandle = activeRoomModelState.handle || null;
         const previousRoomKeyForDestroy = activeRoomModelState.currentRoomKey || '';
 
-        // v54 mobile-safe path:
-        // On desktop, keep v53 behavior: load the new room first, then clean old models.
-        // On mobile, do NOT allow base/living + next room to coexist in GPU memory.
-        // Also hide Google 3D Tiles while inside interiors. This prevents Safari/WebGL crashes.
-        if(HV_MOBILE_SAFE_ROOM_LOADING){
-          try{ setCesiumGroundVisible(false); }catch(_){ }
+        if(HV_PRE_DESTROY_ROOM_MODELS_BEFORE_LOAD){
+          // Mobile/iPhone fix: free GPU memory before creating the next GLB.
+          // Hiding is not enough on Safari; the old model can still keep textures/buffers alive.
           if(previousRoomHandle){
-            try{ hvDestroyModelHandle(previousRoomHandle); }catch(_){ }
+            hvDestroyModelHandle(previousRoomHandle);
           }
           if(baseHandle){
-            try{ destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl:true, silent:true }); }catch(_){ }
+            destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: true, silent: true });
           }
           baseHandleToDestroy = null;
         }else{
+          // Desktop keeps the fast behavior: hide old models, then the user can return instantly.
           if(baseHandle) hvShowModelHandle(baseHandle, false);
           if(previousRoomHandle) hvShowModelHandle(previousRoomHandle, false);
         }
+
         activeRoomModelState.handle = null;
         hvReleaseRoomBlobUrl();
 
@@ -5283,9 +5278,10 @@ async function applyRoomModelForCurrent(actionValue){
         await hvFrameActiveInteriorModelCamera(handle, roomRow, meta || buildingRow, { burst:3, roomKey: activeRoomModelState.currentRoomKey });
         hvRoomPerf('manual camera frame ' + (room.label || room.key || cleanActionValue || 'room'), cameraStart);
 
-        // v53: after the new room is visible, clean old GPU resources in the background.
-        // Cleanup is deferred, but it will NOT run while the next room is loading.
-        if(HV_DESTROY_ROOM_MODELS_ON_SWITCH){
+        // Desktop: no cleanup, for instant return.
+        // Mobile pre-destroys before load, so there is nothing left to defer here.
+        // Non-pre-destroy fallback: clean old GPU resources after the new room is visible.
+        if(HV_DESTROY_ROOM_MODELS_ON_SWITCH && !HV_PRE_DESTROY_ROOM_MODELS_BEFORE_LOAD){
           if(previousRoomHandle){
             hvScheduleDeferredDestroy('previous room', function(){
               if(activeRoomModelState && activeRoomModelState.handle !== previousRoomHandle){
@@ -5307,7 +5303,7 @@ async function applyRoomModelForCurrent(actionValue){
         try{
           currentMode = 'interior';
           try{ mini.hide(); }catch(_){ }
-          setCesiumGroundVisible(HV_MOBILE_SAFE_ROOM_LOADING ? false : true);
+          setCesiumGroundVisible(true);
           setCameraCollision(false);
           setInteriorMouseBindings();
           interiorNav.enable();
@@ -7810,9 +7806,6 @@ function hideUnitMetaUI(){
         title.textContent = (row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '') + ' (loading...)';
         beginViewLoad(useUnitExteriorReveal ? 'Locating selected unit...' : 'Loading selected model...');
         didBeginLoad = true;
-        // v54: on mobile, disable Google 3D Tiles before loading the first interior model.
-        // This keeps the initial unit load from competing with city tiles in Safari/WebGL memory.
-        try{ if(IS_MOBILE || IS_IOS) setCesiumGroundVisible(false); }catch(_){ }
         requestSceneRenderBurst(3);
         let loadPromise = null;
         try{
