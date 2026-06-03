@@ -5005,6 +5005,10 @@ async function refreshFutureProjects(bIdx){
     const HV_DESTROY_ROOM_MODELS_ON_SWITCH = true; // keep one active room model, but destroy old GPU models after the new room is visible
     let activeRoomModelLoading = false;
     const HV_ROOM_LOAD_PROFILING = true;
+    // v54: Mobile Safari/WebGL needs a stricter memory policy than desktop.
+    // Desktop works best with v53 load-new-then-cleanup. On mobile, briefly holding
+    // Google 3D Tiles + base/living + next room can crash even high-end iPhones.
+    const HV_MOBILE_SAFE_ROOM_LOADING = !!(IS_MOBILE || IS_IOS);
 
     function hvRoomPerf(label, startTime){
       try{
@@ -5157,7 +5161,9 @@ async function refreshFutureProjects(bIdx){
           title.textContent = (buildingRow.name||'') + ' — ' + getItemDisplayName(meta, 'Unit');
           currentMode = 'interior';
           try{ mini.hide(); }catch(_){ }
-          setCesiumGroundVisible(true);
+          // v54: keep Google Photorealistic 3D Tiles off during interiors on mobile.
+          // The city tiles are useful outside, but they compete for GPU memory during room navigation.
+          setCesiumGroundVisible(HV_MOBILE_SAFE_ROOM_LOADING ? false : true);
           setCameraCollision(false);
           setInteriorMouseBindings();
           interiorNav.enable();
@@ -5209,12 +5215,27 @@ async function applyRoomModelForCurrent(actionValue){
         // v50 proved that pre-load GPU cleanup can stall Cesium.Model.fromGltfAsync badly.
         // Hide old visuals immediately, load the new room first, then destroy old GPU resources after the new room is visible.
         const baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
-        const baseHandleToDestroy = baseHandle || null;
-        if(baseHandle) hvShowModelHandle(baseHandle, false);
-
+        let baseHandleToDestroy = baseHandle || null;
         const previousRoomHandle = activeRoomModelState.handle || null;
         const previousRoomKeyForDestroy = activeRoomModelState.currentRoomKey || '';
-        if(previousRoomHandle) hvShowModelHandle(previousRoomHandle, false);
+
+        // v54 mobile-safe path:
+        // On desktop, keep v53 behavior: load the new room first, then clean old models.
+        // On mobile, do NOT allow base/living + next room to coexist in GPU memory.
+        // Also hide Google 3D Tiles while inside interiors. This prevents Safari/WebGL crashes.
+        if(HV_MOBILE_SAFE_ROOM_LOADING){
+          try{ setCesiumGroundVisible(false); }catch(_){ }
+          if(previousRoomHandle){
+            try{ hvDestroyModelHandle(previousRoomHandle); }catch(_){ }
+          }
+          if(baseHandle){
+            try{ destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl:true, silent:true }); }catch(_){ }
+          }
+          baseHandleToDestroy = null;
+        }else{
+          if(baseHandle) hvShowModelHandle(baseHandle, false);
+          if(previousRoomHandle) hvShowModelHandle(previousRoomHandle, false);
+        }
         activeRoomModelState.handle = null;
         hvReleaseRoomBlobUrl();
 
@@ -5286,7 +5307,7 @@ async function applyRoomModelForCurrent(actionValue){
         try{
           currentMode = 'interior';
           try{ mini.hide(); }catch(_){ }
-          setCesiumGroundVisible(true);
+          setCesiumGroundVisible(HV_MOBILE_SAFE_ROOM_LOADING ? false : true);
           setCameraCollision(false);
           setInteriorMouseBindings();
           interiorNav.enable();
@@ -7789,6 +7810,9 @@ function hideUnitMetaUI(){
         title.textContent = (row.name||'') + (getItemDisplayName(selectedMeta) ? ' — ' + getItemDisplayName(selectedMeta) : '') + ' (loading...)';
         beginViewLoad(useUnitExteriorReveal ? 'Locating selected unit...' : 'Loading selected model...');
         didBeginLoad = true;
+        // v54: on mobile, disable Google 3D Tiles before loading the first interior model.
+        // This keeps the initial unit load from competing with city tiles in Safari/WebGL memory.
+        try{ if(IS_MOBILE || IS_IOS) setCesiumGroundVisible(false); }catch(_){ }
         requestSceneRenderBurst(3);
         let loadPromise = null;
         try{
