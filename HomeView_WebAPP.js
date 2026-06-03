@@ -108,6 +108,22 @@ Promise.all([
     }catch(_){ }
   }
 
+  function showLaunchLoadingMessage(message){
+    try{
+      const text = String(message || 'Loading HomeView...');
+      launchLoadingOverlay.style.opacity = '1';
+      launchLoadingOverlay.style.pointerEvents = 'auto';
+      launchLoadingOverlay.style.background = 'linear-gradient(180deg, rgba(7,10,16,.88), rgba(7,10,16,.72))';
+      launchLoadingOverlay.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;padding:20px 24px;border-radius:18px;background:rgba(0,0,0,.30);backdrop-filter:blur(8px);box-shadow:0 18px 50px rgba(0,0,0,.30);max-width:min(88vw,360px);font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#fff">
+          <div style="width:34px;height:34px;border-radius:999px;border:3px solid rgba(255,255,255,.28);border-top-color:#fff;animation:hvLaunchSpin .85s linear infinite"></div>
+          <div style="font-weight:800;font-size:17px;letter-spacing:.2px">Loading HomeView</div>
+          <div id="hvLaunchLoadingText" style="font-size:13px;line-height:1.45;opacity:.86">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+        </div>
+      `;
+    }catch(_){ try{ setLaunchLoadingText(message); }catch(__){} }
+  }
+
   // ========== Environment flags ==========
   const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
   const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
@@ -231,6 +247,8 @@ Promise.all([
 
   // current view mode (needed for FOV slider)
   let currentMode = 'exterior';
+  // Room model state is declared early because camera-framing helpers may run before the room loader block initializes.
+  let activeRoomModelState = null;
 
   // Compatibility for older marker-preview code paths.
   // Some generated editor code still references modelEntities directly.
@@ -282,9 +300,9 @@ Promise.all([
 
 
   // ===== Room-to-Room 3D Loading =====
-  // v73 fix: label picking follows the active room model, not only the original unit model.
-  // Optional Sheet column per unit:
-  // room_model_items = "key|Label|model_url|heading; bedroom|Bedroom|https://.../bedroom.glb|90"
+  // v44 manual camera pose: label picking follows the active room model, not only the original unit model.
+  // Recommended Sheet format per unit:
+  // room_model_items = "key|Label|model_url|model_heading|camera_x,camera_y,camera_z|camera_heading; bedroom|Bedroom|https://.../bedroom.glb|90|0,-1.8,1.6|180"
   // Clickable 3D labels can use actionType=open_room_model and actionValue=room key.
   function hvSlugifyRoomKey(s){
     return String(s || '').trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'') || 'room';
@@ -308,27 +326,46 @@ Promise.all([
       const s = String(chunk || '').trim();
       if(!s) return;
       const parts = s.split('|').map(function(x){ return String(x || '').trim(); });
-      let key='', label='', url='', heading='';
+      let key='', label='', url='', modelHeading='', cameraXyz='', cameraHeading='';
       if(parts.length >= 3){
         if(isLikelyModelUrl(parts[1])){
+          // Compact format: Label|URL|model_heading|camera_x,camera_y,camera_z|camera_heading
           label = parts[0] || 'Room';
           key = hvSlugifyRoomKey(label);
           url = parts[1];
-          heading = parts[2] || '';
+          modelHeading = parts[2] || '';
+          cameraXyz = parts[3] || '';
+          cameraHeading = parts[4] || '';
         }else{
+          // Recommended format: key|Label|URL|model_heading|camera_x,camera_y,camera_z|camera_heading
           key = hvSlugifyRoomKey(parts[0]);
           label = parts[1] || parts[0] || 'Room';
           url = parts[2];
-          heading = parts[3] || '';
+          modelHeading = parts[3] || '';
+          cameraXyz = parts[4] || '';
+          cameraHeading = parts[5] || '';
         }
       }else if(parts.length >= 2){
         label = parts[0] || 'Room';
         key = hvSlugifyRoomKey(label);
         url = parts[1];
-        heading = parts[2] || '';
+        modelHeading = parts[2] || '';
+        cameraXyz = parts[3] || '';
+        cameraHeading = parts[4] || '';
       }
       if(!key) key = hvSlugifyRoomKey(label);
-      if(label && isLikelyModelUrl(url)) items.push({ key:key, label:label, url:url, heading:heading });
+      if(label && isLikelyModelUrl(url)) items.push({
+        key:key,
+        label:label,
+        url:url,
+        heading:modelHeading,
+        modelHeading:modelHeading,
+        model_heading:modelHeading,
+        cameraXyz:cameraXyz,
+        camera_xyz:cameraXyz,
+        cameraHeading:cameraHeading,
+        camera_heading:cameraHeading
+      });
     });
     return items;
   }
@@ -467,6 +504,10 @@ function parseFutureProjects(raw){
   let GOOGLE_3D_TILES = null;
   let desiredMSE = IS_IOS ? 14 : 12;
 
+  // v45: cache sampled surface heights. Room switching used to call sampleHeightMostDetailed
+  // for every room model, which can block model creation and make later room loads feel extremely slow.
+  const hvSurfaceHeightCache = new Map();
+
   // Use the same global 3D tiles asset pattern that works in Cesium Sandcastle.
   (async function(){
     try{
@@ -487,15 +528,32 @@ function parseFutureProjects(raw){
   }
 
   async function getSurfaceHeight(lon, lat){
-    const carto = Cesium.Cartographic.fromDegrees(lon, lat);
-    if (GOOGLE_3D_TILES) {
-      try {
-        await GOOGLE_3D_TILES.readyPromise;
-        const h = await Cesium.sampleHeightMostDetailed(GOOGLE_3D_TILES, carto);
-        if (Number.isFinite(h)) return h;
-      } catch(e){}
-    }
-    return 0;
+    const lonN = Number(lon);
+    const latN = Number(lat);
+    const key = (Number.isFinite(lonN) ? lonN.toFixed(7) : String(lon)) + ',' + (Number.isFinite(latN) ? latN.toFixed(7) : String(lat));
+    try{
+      const cached = hvSurfaceHeightCache.get(key);
+      if(typeof cached === 'number') return cached;
+      if(cached && cached.promise) return await cached.promise;
+    }catch(_){ }
+
+    const promise = (async function(){
+      const carto = Cesium.Cartographic.fromDegrees(lonN, latN);
+      if (GOOGLE_3D_TILES) {
+        try {
+          await GOOGLE_3D_TILES.readyPromise;
+          const h = await Cesium.sampleHeightMostDetailed(GOOGLE_3D_TILES, carto);
+          const v = Number.isFinite(h) ? h : 0;
+          try{ hvSurfaceHeightCache.set(key, v); }catch(_){ }
+          return v;
+        } catch(e){}
+      }
+      try{ hvSurfaceHeightCache.set(key, 0); }catch(_){ }
+      return 0;
+    })();
+
+    try{ hvSurfaceHeightCache.set(key, { promise: promise }); }catch(_){ }
+    return await promise;
   }
 
   async function clampDataSourceToSurface(ds){
@@ -939,6 +997,254 @@ function parseFutureProjects(raw){
   function stopCameraTracking(){
     try{ viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); }catch(_){ }
   }
+
+
+  // ===== HomeView Room Loader Profiling Helper =====
+  // v48 fix: createInteriorModel can run outside the room-loader block, so hvRoomPerf must be available globally in this module scope.
+  const HV_ROOM_LOAD_PROFILING_GLOBAL = true;
+  function hvRoomPerf(label, startTime){
+    try{
+      if(!HV_ROOM_LOAD_PROFILING_GLOBAL) return;
+      const t0 = Number(startTime);
+      if(!Number.isFinite(t0)) return;
+      const ms = Math.round((performance.now() - t0) * 10) / 10;
+      console.log('[HomeView RoomLoad]', String(label || 'step') + ':', ms + 'ms');
+    }catch(_){ }
+  }
+
+
+  // ===== Legacy auto-camera helpers (kept for compatibility, not used by v44 room manual pose) =====
+  async function hvWaitForModelWorldBoundingSphere(handle, fallbackMeta, maxTries){
+    const tries = Math.max(1, maxTries || 18);
+    for(let i=0;i<tries;i++){
+      try{
+        const primitive = handle && handle.modelPrimitive ? handle.modelPrimitive : null;
+        const bs = primitive && primitive.boundingSphere ? primitive.boundingSphere : null;
+        if(bs && bs.center && Number.isFinite(bs.radius) && bs.radius > 0){
+          return Cesium.BoundingSphere.clone(bs, new Cesium.BoundingSphere());
+        }
+      }catch(_){}
+
+      try{ requestSceneRender(); }catch(_){}
+      await waitMs(i < 6 ? 32 : 70);
+    }
+
+    // Fallback: use the anchor/pivot only if the model bounding sphere is not ready.
+    try{
+      const anchor = handle && handle.anchorEntity ? handle.anchorEntity : handle;
+      const now = Cesium.JulianDate.now();
+      const pos = anchor && anchor.position && anchor.position.getValue ? anchor.position.getValue(now) : null;
+      if(pos){
+        const fallbackRadius = Math.max(1, parseFirstNumber(fallbackMeta && fallbackMeta.scale) || 4);
+        return new Cesium.BoundingSphere(pos, fallbackRadius);
+      }
+    }catch(_){}
+
+    return null;
+  }
+
+  function hvGetInteriorCameraDistance(meta, row, radius, roomKey){
+    const key = hvSlugifyRoomKey(roomKey || (activeRoomModelState && activeRoomModelState.currentRoomKey) || '');
+    const isSmallWetRoom = /bath|toilet|wash|powder|wc/.test(key);
+    const r = Math.max(0.6, Number(radius) || 2.0);
+
+    // Bathroom and powder-room models are often physically small and sometimes have
+    // imperfect GLB bounds/pivots. Do not reuse the unit's living-room camera_distance
+    // for them; it can put the camera outside the room or force a long bad frame.
+    if(isSmallWetRoom){
+      return Math.min(Math.max(r * 0.72, 1.05), 2.65);
+    }
+
+    const explicit = parseFirstNumber(firstFilled(
+      meta && meta.camera_distance,
+      meta && meta.interior_camera_distance,
+      meta && meta.default_camera_distance,
+      row && row.camera_distance,
+      row && row.interior_camera_distance,
+      row && row.default_camera_distance
+    ));
+    if(Number.isFinite(explicit) && explicit > 0) return Math.max(0.01, explicit);
+
+    // Automatic fallback for rooms that do not have a useful camera_distance.
+    return Math.min(Math.max(r * 0.55, 1.4), 7.0);
+  }
+
+  function hvGetActiveRoomLabelWorldSphere(handle, roomKey){
+    try{
+      if(!handle) return null;
+      if(typeof getCurrentSelectionLabels !== 'function') return null;
+      const key = hvSlugifyRoomKey(roomKey || (activeRoomModelState && activeRoomModelState.currentRoomKey) || '');
+      const anchor = handle.anchorEntity || handle;
+      const now = Cesium.JulianDate.now();
+      const pos = anchor && anchor.position && anchor.position.getValue ? anchor.position.getValue(now) : null;
+      if(!pos) return null;
+      let q = null;
+      try{ q = anchor.orientation && anchor.orientation.getValue ? anchor.orientation.getValue(now) : null; }catch(_){}
+      let matrix = null;
+      if(q){
+        const rot = Cesium.Matrix3.fromQuaternion(q, new Cesium.Matrix3());
+        matrix = Cesium.Matrix4.fromRotationTranslation(rot, pos, new Cesium.Matrix4());
+      }else{
+        matrix = Cesium.Transforms.eastNorthUpToFixedFrame(pos);
+      }
+
+      const pts = [];
+      (getCurrentSelectionLabels() || []).forEach(function(it){
+        try{
+          const itRoom = normalizeLabelRoomKey(it && it.roomKey || '');
+          const belongs = key === '__base__' ? (!itRoom || itRoom === '__base__') : (itRoom === key);
+          if(!belongs) return;
+          const local = new Cesium.Cartesian3(Number(it.x)||0, Number(it.y)||0, Number(it.z)||0);
+          pts.push(Cesium.Matrix4.multiplyByPoint(matrix, local, new Cesium.Cartesian3()));
+        }catch(_){}
+      });
+      if(!pts.length) return null;
+
+      const sphere = Cesium.BoundingSphere.fromPoints(pts, new Cesium.BoundingSphere());
+      if(!sphere || !sphere.center) return null;
+      // One label is still a useful anchor; give it a small room-sized radius.
+      sphere.radius = Math.min(Math.max(Number(sphere.radius) || 1.15, 0.9), 3.2);
+      sphere.center = Cesium.Cartesian3.clone(sphere.center);
+      return sphere;
+    }catch(_){ return null; }
+  }
+
+  function hvIsSmallRoomKey(roomKey){
+    return /bath|toilet|wash|powder|wc/.test(hvSlugifyRoomKey(roomKey || ''));
+  }
+
+  function hvGetModelWorldMatrixFromHandle(handle){
+    try{
+      const anchor = handle && handle.anchorEntity ? handle.anchorEntity : handle;
+      const now = Cesium.JulianDate.now();
+      const pos = anchor && anchor.position && anchor.position.getValue ? anchor.position.getValue(now) : null;
+      if(!pos) return null;
+      let q = null;
+      try{ q = anchor.orientation && anchor.orientation.getValue ? anchor.orientation.getValue(now) : null; }catch(_){ }
+      if(q){
+        const rot = Cesium.Matrix3.fromQuaternion(q, new Cesium.Matrix3());
+        return Cesium.Matrix4.fromRotationTranslation(rot, pos, new Cesium.Matrix4());
+      }
+      return Cesium.Transforms.eastNorthUpToFixedFrame(pos);
+    }catch(_){ return null; }
+  }
+
+  function hvParseCameraXyz(raw){
+    try{
+      const nums = String(raw || '').match(/-?\d+(?:\.\d+)?/g);
+      if(!nums || nums.length < 3) return null;
+      const x = Number(nums[0]), y = Number(nums[1]), z = Number(nums[2]);
+      if(!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+      return new Cesium.Cartesian3(x, y, z);
+    }catch(_){ return null; }
+  }
+
+  function hvApplyManualRoomCameraPose(handle, meta, row, options){
+    try{
+      const cameraLocal = hvParseCameraXyz(firstFilled(
+        meta && meta.camera_xyz,
+        meta && meta.cameraXyz,
+        meta && meta.room_camera_xyz,
+        row && row.camera_xyz,
+        row && row.cameraXyz,
+        row && row.room_camera_xyz
+      ));
+      if(!cameraLocal) return false;
+
+      const matrix = hvGetModelWorldMatrixFromHandle(handle);
+      if(!matrix) return false;
+
+      const cameraWorld = Cesium.Matrix4.multiplyByPoint(matrix, cameraLocal, new Cesium.Cartesian3());
+      const camHeadDeg = parseFirstNumber(firstFilled(
+        meta && meta.camera_heading,
+        meta && meta.cameraHeading,
+        meta && meta.room_camera_heading,
+        row && row.camera_heading,
+        row && row.cameraHeading,
+        row && row.room_camera_heading
+      ));
+      const headingRad = Cesium.Math.toRadians(Number.isFinite(camHeadDeg) ? camHeadDeg : 0);
+      const lookDistance = Math.max(1.0, parseFirstNumber(firstFilled(
+        meta && meta.camera_look_distance,
+        row && row.camera_look_distance
+      )) || 2.0);
+      const pitchDeg = parseFirstNumber(firstFilled(
+        meta && meta.camera_pitch,
+        row && row.camera_pitch
+      ));
+      const pitchRad = Cesium.Math.toRadians(Number.isFinite(pitchDeg) ? pitchDeg : 0);
+      const horizontal = Math.cos(pitchRad) * lookDistance;
+      const localLook = new Cesium.Cartesian3(
+        cameraLocal.x + Math.sin(headingRad) * horizontal,
+        cameraLocal.y + Math.cos(headingRad) * horizontal,
+        cameraLocal.z + Math.sin(pitchRad) * lookDistance
+      );
+      const targetWorld = Cesium.Matrix4.multiplyByPoint(matrix, localLook, new Cesium.Cartesian3());
+      stopCameraTracking();
+      const orientation = makeLookAtOrientation(cameraWorld, targetWorld, Cesium.Cartesian3.UNIT_Z);
+      viewer.camera.setView({ destination: cameraWorld, orientation: orientation });
+      try{ applyFixedInteriorFov(); }catch(_){ }
+      requestSceneRenderBurst((options && options.burst) || 5);
+      return true;
+    }catch(err){
+      console.warn('HomeView manual room camera pose failed:', err);
+      return false;
+    }
+  }
+
+  async function hvFrameActiveInteriorModelCamera(handle, meta, row, options){
+    // v44 camera framing:
+    // 1) If room_model_items provides manual camera pose, use it directly:
+    //    key|Label|URL|model_heading|camera_x,camera_y,camera_z|camera_heading
+    // 2) Otherwise keep the old lightweight heading/range fallback for legacy rows.
+    try{
+      if(!handle) return false;
+      const opts = options || {};
+      if(hvApplyManualRoomCameraPose(handle, meta, row, opts)) return true;
+
+      const anchor = handle.anchorEntity || handle;
+      const now = Cesium.JulianDate.now();
+      const target = anchor && anchor.position && anchor.position.getValue ? anchor.position.getValue(now) : null;
+      if(!target) return false;
+
+      const camHeadDeg = parseFirstNumber(firstFilled(
+        meta && meta.camera_heading,
+        meta && meta.heading,
+        row && row.camera_heading,
+        row && row.heading
+      )) || 0;
+      const camPitchDeg = parseFirstNumber(firstFilled(
+        meta && meta.camera_pitch,
+        row && row.camera_pitch
+      ));
+      const range = Math.max(0.01, parseFirstNumber(firstFilled(
+        meta && meta.camera_distance,
+        meta && meta.interior_camera_distance,
+        meta && meta.default_camera_distance,
+        row && row.camera_distance,
+        row && row.interior_camera_distance,
+        row && row.default_camera_distance
+      )) || 0.1);
+
+      stopCameraTracking();
+      viewer.scene.camera.lookAt(
+        target,
+        new Cesium.HeadingPitchRange(
+          Cesium.Math.toRadians(camHeadDeg),
+          Cesium.Math.toRadians(Number.isFinite(camPitchDeg) ? camPitchDeg : -15),
+          range
+        )
+      );
+      viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+      try{ applyFixedInteriorFov(); }catch(_){ }
+      requestSceneRenderBurst(opts.burst || 5);
+      return true;
+    }catch(err){
+      console.warn('HomeView interior camera framing failed:', err);
+      return false;
+    }
+  }
+
 
   // ===== Unit Location Reveal Camera Helpers =====
   function hvGetMarkerCameraTextFromMeta(meta){
@@ -4583,7 +4889,7 @@ async function refreshFutureProjects(bIdx){
       if(!isLikelyModelUrl(rawUrl)) throw new Error('Invalid model URL');
       if((interiorBlobUrlsByBuilding[bIdx]||[])[itemIdx]) return interiorBlobUrlsByBuilding[bIdx][itemIdx];
       if((interiorBlobFetchPromisesByBuilding[bIdx]||[])[itemIdx]) return interiorBlobFetchPromisesByBuilding[bIdx][itemIdx];
-      const attempts = [18000, 26000];
+      const attempts = [45000, 90000];
       const p = (async function(){
         let lastErr = null;
         for(let ai=0; ai<attempts.length; ai++){
@@ -4690,13 +4996,46 @@ async function refreshFutureProjects(bIdx){
       if(!options.silent) requestSceneRenderBurst(4);
     }
 
-    const activeRoomModelState = { key:'', currentRoomKey:'__base__', handle:null, cache:new Map(), token:0, lastBlobUrl:null };
+    activeRoomModelState = { key:'', currentRoomKey:'__base__', handle:null, cache:new Map(), token:0, lastBlobUrl:null };
 
     // Mobile memory policy:
     // On phones/tablets, a hidden Cesium model can still keep its GPU buffers/textures alive.
     // For room-to-room navigation we destroy the previous model instead of only hiding it.
     // Desktop keeps the faster hidden-model behavior.
-    const HV_DESTROY_ROOM_MODELS_ON_SWITCH = !!IS_MOBILE;
+    const HV_DESTROY_ROOM_MODELS_ON_SWITCH = true; // keep one active room model, but destroy old GPU models after the new room is visible
+    let activeRoomModelLoading = false;
+    const HV_ROOM_LOAD_PROFILING = true;
+
+    function hvRoomPerf(label, startTime){
+      try{
+        if(!HV_ROOM_LOAD_PROFILING) return;
+        const ms = Math.round((performance.now() - startTime) * 10) / 10;
+        console.log('[HomeView RoomLoad]', label + ':', ms + 'ms');
+      }catch(_){ }
+    }
+
+    function hvScheduleDeferredDestroy(label, destroyFn, delayMs){
+      const delay = Math.max(0, Number(delayMs) || 250);
+      let tries = 0;
+      function runDestroyWhenSafe(){
+        try{
+          // v53: Never run GPU cleanup while another room is inside Model.fromGltfAsync.
+          // v51 was fast, but its deferred destroy timer could fire during the next room load
+          // if the user clicked quickly, causing random 7s/25s/33s stalls.
+          if(activeRoomModelLoading && tries < 40){
+            tries += 1;
+            setTimeout(runDestroyWhenSafe, 90);
+            return;
+          }
+        }catch(_){ }
+        const t0 = performance.now();
+        try{ if(typeof destroyFn === 'function') destroyFn(); }
+        catch(err){ console.warn('HomeView deferred destroy failed:', label, err); }
+        hvRoomPerf('deferred destroy ' + (label || ''), t0);
+        try{ requestSceneRenderBurst(1); }catch(_){ }
+      }
+      setTimeout(runDestroyWhenSafe, delay);
+    }
 
     function hvDestroyModelHandle(handle){
       if(!handle) return;
@@ -4704,6 +5043,7 @@ async function refreshFutureProjects(bIdx){
       try{ if(handle.anchorEntity) viewer.entities.remove(handle.anchorEntity); }catch(_){ }
       try{ if(handle.modelPrimitive) viewer.scene.primitives.remove(handle.modelPrimitive); }catch(_){ }
       try{ if(handle.destroy) handle.destroy(); }catch(_){ }
+      try{ requestSceneRenderBurst(2); }catch(_){ }
     }
 
     function hvShowModelHandle(handle, visible){
@@ -4715,12 +5055,40 @@ async function refreshFutureProjects(bIdx){
     }
 
     function hvReleaseRoomBlobUrl(){
+      // v40: Do not revoke room blob URLs during room-to-room navigation.
+      // The heavy memory is the active WebGL model/texture buffers, which we destroy separately.
+      // Keeping the downloaded Blob URL cached prevents repeated Dropbox/network fetches and
+      // stops the 3rd/4th room switch from becoming extremely slow.
+      try{ activeRoomModelState.lastBlobUrl = null; }catch(_){ }
+    }
+
+    async function hvGetRoomCachedBlobUrl(cacheKey, rawUrl){
+      const key = String(cacheKey || rawUrl || '').trim();
+      if(!key) return await fetchModelBlobUrl(rawUrl, 180000);
       try{
-        if(activeRoomModelState.lastBlobUrl){
-          URL.revokeObjectURL(activeRoomModelState.lastBlobUrl);
-          activeRoomModelState.lastBlobUrl = null;
-        }
-      }catch(_){ activeRoomModelState.lastBlobUrl = null; }
+        const cached = activeRoomModelState.cache.get(key);
+        if(cached && cached.blobUrl) return cached.blobUrl;
+        if(cached && cached.promise) return await cached.promise;
+      }catch(_){}
+
+      const p = fetchModelBlobUrl(rawUrl, 180000).then(function(blobUrl){
+        activeRoomModelState.cache.set(key, { blobUrl: blobUrl, url: rawUrl, createdAt: Date.now() });
+        return blobUrl;
+      }).catch(function(err){
+        try{ activeRoomModelState.cache.delete(key); }catch(_){}
+        throw err;
+      });
+      try{ activeRoomModelState.cache.set(key, { promise: p, url: rawUrl, createdAt: Date.now() }); }catch(_){}
+      return await p;
+    }
+
+    function hvRevokeRoomModelCache(){
+      try{
+        activeRoomModelState.cache.forEach(function(v){
+          try{ if(v && v.blobUrl) URL.revokeObjectURL(v.blobUrl); }catch(_){}
+        });
+        activeRoomModelState.cache.clear();
+      }catch(_){}
     }
 
     function getActiveRoomContextKey(){
@@ -4759,8 +5127,7 @@ async function refreshFutureProjects(bIdx){
       activeRoomModelState.handle = null;
       try{ renderSelectionLabels(); syncQuickShowLabelsButton(); }catch(_){ }
       if(!keepCache){
-        try{ activeRoomModelState.cache.forEach(function(v){ if(v && v.blobUrl) URL.revokeObjectURL(v.blobUrl); }); }catch(_){ }
-        activeRoomModelState.cache.clear();
+        hvRevokeRoomModelCache();
       }
       requestSceneRenderBurst(4);
     }
@@ -4786,6 +5153,7 @@ async function refreshFutureProjects(bIdx){
         try{
           const meta = (interiorMetaByBuilding[sel.bIdx] || [])[sel.itemIdx] || {};
           const buildingRow = b[sel.bIdx] || {};
+          await hvFrameActiveInteriorModelCamera(baseHandle, meta, buildingRow, { burst:10, maxTries:45 });
           title.textContent = (buildingRow.name||'') + ' — ' + getItemDisplayName(meta, 'Unit');
           currentMode = 'interior';
           try{ mini.hide(); }catch(_){ }
@@ -4807,6 +5175,11 @@ async function refreshFutureProjects(bIdx){
 async function applyRoomModelForCurrent(actionValue){
       const sel = activeInteriorSelection;
       if(!sel || sel.bIdx == null || sel.itemIdx == null) return false;
+      if(activeRoomModelLoading){
+        try{ console.warn('HomeView room switch ignored because another room is still loading.'); }catch(_){}
+        try{ labelEditorStatus.textContent = 'Please wait — room is still loading.'; }catch(_){ }
+        return false;
+      }
 
       const cleanActionValue = String(actionValue || '').split('|')[0].trim();
       const requestedRoomKey = normalizeLabelRoomKey(cleanActionValue);
@@ -4827,32 +5200,30 @@ async function applyRoomModelForCurrent(actionValue){
       }
 
       const token = ++activeRoomModelState.token;
-      await showSceneTransition('Loading ' + (room.label || 'room') + '...');
+      activeRoomModelLoading = true;
+      // v45: show the loading layer without adding an extra artificial wait before model creation.
+      try{ showSceneTransition('Loading ' + (room.label || 'room') + '...'); }catch(_){ }
       beginViewLoad('Loading ' + (room.label || 'room') + '...');
       try{
-        // Hide base/original unit model on desktop.
-        // Destroy it on mobile to free GPU memory before loading the next room.
+        // v51: do NOT destroy old/base models before the new room is ready.
+        // v50 proved that pre-load GPU cleanup can stall Cesium.Model.fromGltfAsync badly.
+        // Hide old visuals immediately, load the new room first, then destroy old GPU resources after the new room is visible.
         const baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
-        if(baseHandle){
-          if(HV_DESTROY_ROOM_MODELS_ON_SWITCH){
-            destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: false, silent: true });
-          }else{
-            hvShowModelHandle(baseHandle, false);
-          }
-        }
+        const baseHandleToDestroy = baseHandle || null;
+        if(baseHandle) hvShowModelHandle(baseHandle, false);
 
-        // Destroy previous active room model. Do NOT reuse destroyed handles.
-        if(activeRoomModelState.handle){
-          hvDestroyModelHandle(activeRoomModelState.handle);
-          activeRoomModelState.handle = null;
-        }
+        const previousRoomHandle = activeRoomModelState.handle || null;
+        const previousRoomKeyForDestroy = activeRoomModelState.currentRoomKey || '';
+        if(previousRoomHandle) hvShowModelHandle(previousRoomHandle, false);
+        activeRoomModelState.handle = null;
         hvReleaseRoomBlobUrl();
 
-        const blobUrl = await fetchModelBlobUrl(room.url, IS_MOBILE ? 26000 : 32000).catch(function(e){
-          throw new Error('Could not fetch room model "' + (room.key || room.label || '') + '" from URL: ' + room.url + ' — ' + (e && e.message ? e.message : e));
-        });
+        // v46: Use Cesium's native URL loading path for room models.
+        // The previous room pipeline did: fetch -> Blob -> objectURL -> Model.fromGltfAsync.
+        // Testing showed Cesium's own direct URL path is dramatically faster, especially after several room switches.
+        const roomModelUrl = safeModelUrl(room.url);
+        if(!roomModelUrl) throw new Error('Missing room model URL for ' + (room.key || room.label || cleanActionValue || 'room'));
         if(token !== activeRoomModelState.token){
-          try{ URL.revokeObjectURL(blobUrl); }catch(_){ }
           return true;
         }
 
@@ -4860,22 +5231,56 @@ async function applyRoomModelForCurrent(actionValue){
         roomRow.model_url = room.url;
         roomRow.unit_name = room.label || room.key || getItemDisplayName(meta, 'Room');
         roomRow.name = roomRow.unit_name;
+        // First heading after URL controls the 3D model rotation.
         if(hasTextValue(room.heading)) roomRow.heading = room.heading;
+        else if(hasTextValue(room.modelHeading)) roomRow.heading = room.modelHeading;
+        else if(hasTextValue(room.model_heading)) roomRow.heading = room.model_heading;
 
-        const handle = await createInteriorModel(buildingRow, roomRow, viewer, blobUrl, null, null);
+        // Manual camera pose for this room/model.
+        // Format: key|Label|URL|model_heading|camera_x,camera_y,camera_z|camera_heading
+        if(hasTextValue(room.camera_xyz)) roomRow.camera_xyz = room.camera_xyz;
+        else if(hasTextValue(room.cameraXyz)) roomRow.camera_xyz = room.cameraXyz;
+        if(hasTextValue(room.camera_heading)) roomRow.camera_heading = room.camera_heading;
+        else if(hasTextValue(room.cameraHeading)) roomRow.camera_heading = room.cameraHeading;
+
+        const createStart = performance.now();
+        const handle = await createInteriorModel(buildingRow, roomRow, viewer, roomModelUrl, null, null);
+        hvRoomPerf('createInteriorModel ' + (room.label || room.key || cleanActionValue || 'room'), createStart);
         if(token !== activeRoomModelState.token){
           try{ if(handle && handle.anchorEntity) viewer.entities.remove(handle.anchorEntity); }catch(_){}
           try{ if(handle && handle.modelPrimitive) viewer.scene.primitives.remove(handle.modelPrimitive); }catch(_){}
-          try{ URL.revokeObjectURL(blobUrl); }catch(_){}
           return true;
         }
 
         activeRoomModelState.key = sel.bIdx + ':' + sel.itemIdx + ':' + (room.key || cleanActionValue);
         activeRoomModelState.currentRoomKey = hvSlugifyRoomKey(room.key || room.label || cleanActionValue);
         activeRoomModelState.handle = handle;
-        activeRoomModelState.lastBlobUrl = blobUrl;
+        activeRoomModelState.lastBlobUrl = roomModelUrl;
 
         hvShowModelHandle(handle, true);
+        const cameraStart = performance.now();
+        await hvFrameActiveInteriorModelCamera(handle, roomRow, meta || buildingRow, { burst:3, roomKey: activeRoomModelState.currentRoomKey });
+        hvRoomPerf('manual camera frame ' + (room.label || room.key || cleanActionValue || 'room'), cameraStart);
+
+        // v53: after the new room is visible, clean old GPU resources in the background.
+        // Cleanup is deferred, but it will NOT run while the next room is loading.
+        if(HV_DESTROY_ROOM_MODELS_ON_SWITCH){
+          if(previousRoomHandle){
+            hvScheduleDeferredDestroy('previous room', function(){
+              if(activeRoomModelState && activeRoomModelState.handle !== previousRoomHandle){
+                hvDestroyModelHandle(previousRoomHandle);
+              }
+            }, 220);
+          }
+          if(baseHandleToDestroy && activeRoomModelState.currentRoomKey !== '__base__'){
+            hvScheduleDeferredDestroy('base interior', function(){
+              // Only destroy the base if we are still inside a room. If the user already returned to base, keep it.
+              if(activeRoomModelState && activeRoomModelState.currentRoomKey !== '__base__'){
+                destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: true, silent: true });
+              }
+            }, 320);
+          }
+        }
 
         try{ title.textContent = (buildingRow.name||'') + ' — ' + getItemDisplayName(meta, '') + ' — ' + (room.label || room.key || 'Room'); }catch(_){ }
         try{
@@ -4915,6 +5320,7 @@ async function applyRoomModelForCurrent(actionValue){
         }catch(_){}
         return false;
       }finally{
+        activeRoomModelLoading = false;
         endViewLoad();
         hideSceneTransition().catch(function(){});
       }
@@ -7649,14 +8055,7 @@ function hideUnitMetaUI(){
         const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
         const meta=selectedMeta||{};
         if(ent){
-          const target=ent.position.getValue(Cesium.JulianDate.now());
-          const camHead=Cesium.Math.toRadians(parseFirstNumber(meta.camera_heading!=null?meta.camera_heading:row.heading)||0);
-          const camPitch=Cesium.Math.toRadians(parseFirstNumber(meta.camera_pitch)||-15);
-          const range = parseFirstNumber(meta.camera_distance) || Math.max(30,(parseFirstNumber(meta.scale)||8)*15);
-
-          viewer.scene.camera.lookAt(target, new Cesium.HeadingPitchRange(camHead,camPitch,range));
-          viewer.scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
-          requestSceneRender();
+          await hvFrameActiveInteriorModelCamera(ent, meta, row, { burst:10 });
           syncInteriorClipForSelection(meta, row, false);
           setCameraCollision(false);
           setInteriorMouseBindings(); interiorNav.enable(); setJoystickVisible(true);
@@ -7798,11 +8197,18 @@ function hideUnitMetaUI(){
           }
           bSel.addEventListener('change', refreshUnits);
           refreshUnits();
+          function hvCommitLaunchChoice(choice){
+            try{
+              const isUnit = choice && choice.viewValue && String(choice.viewValue) !== 'exterior';
+              showLaunchLoadingMessage(isUnit ? 'Opening selected unit...' : 'Opening selected building...');
+            }catch(_){ }
+            resolve(choice);
+          }
           skipBtn.onclick = function(){
-            resolve({ skipped:true, bIdx:0, viewValue:'exterior' });
+            hvCommitLaunchChoice({ skipped:true, bIdx:0, viewValue:'exterior' });
           };
           confirmBtn.onclick = function(){
-            resolve({ skipped:false, bIdx:Number(bSel.value || 0), viewValue:String(uSel.value || 'exterior') });
+            hvCommitLaunchChoice({ skipped:false, bIdx:Number(bSel.value || 0), viewValue:String(uSel.value || 'exterior') });
           };
         }catch(err){
           console.warn('Launch chooser failed:', err);
@@ -7941,7 +8347,7 @@ function hideUnitMetaUI(){
         if(viewSelect) viewSelect.value = String((launchChoice && launchChoice.viewValue) || 'exterior');
         applyPoiTypeFilters(chosenBuildingIdx);
         syncFutureProjectsChip();
-        setLaunchLoadingText((viewSelect && viewSelect.value !== 'exterior') ? 'Opening selected unit...' : 'Opening selected building...');
+        showLaunchLoadingMessage((viewSelect && viewSelect.value !== 'exterior') ? 'Opening selected unit...' : 'Opening selected building...');
       }catch(err){
         console.warn('Launch chooser selection failed:', err);
       }
@@ -8016,7 +8422,10 @@ function hideUnitMetaUI(){
 
   async function createInteriorModel(bRow,uRow,viewer,modelUrl,finishSelections,panoramaSelection){
     const baseLon=toNum(bRow.lng), baseLat=toNum(bRow.lat), baseH=toNum(bRow.height)||20;
+    const hvCreateT0 = performance.now();
+    const surfaceT0 = performance.now();
     const baseSurfaceH = await getSurfaceHeight(baseLon, baseLat);
+    hvRoomPerf('getSurfaceHeight', surfaceT0);
     const offE=toNum(uRow.offset_east_m)||0, offN=toNum(uRow.offset_north_m)||0, offU=toNum(uRow.offset_up_m)||0;
     const pos=placeWithEnuOffset(baseLon,baseLat,baseSurfaceH + baseH,offE,offN,offU);
     const hd=parseFirstNumber(uRow.heading!=null?uRow.heading:bRow.heading)||0;
@@ -8039,17 +8448,22 @@ function hideUnitMetaUI(){
 
     const modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(pos, hpr);
     let hvRawGltf = null;
-    const modelPrimitive = await Cesium.Model.fromGltfAsync({
+    const modelOptions = {
       url:modelUrl,
       modelMatrix:modelMatrix,
       scale:scale,
       minimumPixelSize:minPx,
       maximumScale:maxScale,
       shadows:Cesium.ShadowMode.DISABLED,
-      incrementallyLoadTextures:false,
+      // v45/v46: allow Cesium to show the model as soon as core geometry is ready, then stream textures progressively.
+      incrementallyLoadTextures:true,
       asynchronous:true,
-      allowPicking:true,
-      gltfCallback:function(gltf){
+      allowPicking:true
+    };
+    // v46: Skip raw glTF patching for normal room switches. It is only needed when a unit has
+    // finish/panorama customization; otherwise the callback adds unnecessary work to every model load.
+    if(finishSelections || panoramaSelection){
+      modelOptions.gltfCallback = function(gltf){
         hvRawGltf = gltf;
         try{
           const fn = (typeof applyVisualSelectionsToRawGltf==='function'
@@ -8060,8 +8474,12 @@ function hideUnitMetaUI(){
           if(fn) fn(gltf, finishSelections || null, panoramaSelection || null);
           else console.warn('Raw glTF visual patch skipped: applyVisualSelectionsToRawGltf not available');
         }catch(err){ console.warn('Raw glTF visual patch failed:', err); }
-      }
-    });
+      };
+    }
+    const gltfLoadT0 = performance.now();
+    const modelPrimitive = await Cesium.Model.fromGltfAsync(modelOptions);
+    hvRoomPerf('Cesium.Model.fromGltfAsync', gltfLoadT0);
+    hvRoomPerf('createInteriorModel total before add', hvCreateT0);
     try{ modelPrimitive.__hvRawGltf = hvRawGltf; }catch(_){ }
     modelPrimitive.show = false;
     viewer.scene.primitives.add(modelPrimitive);
