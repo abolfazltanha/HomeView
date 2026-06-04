@@ -5117,6 +5117,42 @@ async function refreshFutureProjects(bIdx){
       return active === '__base__' ? 'main model' : active.replace(/_/g, ' ');
     }
 
+
+    function hvBuildBaseRoomCameraRow(meta, buildingRow){
+      // Living Room is treated internally as __base__ so labels can return to the original unit model.
+      // Without this bridge, the base/living model uses only the unit row camera fields and ignores
+      // living|Living Room|...|model_heading|camera_xyz|camera_heading from room_model_items.
+      try{
+        const baseMeta = Object.assign({}, meta || {});
+        const items = parseRoomModelItems(meta, buildingRow) || [];
+        let livingRoom = null;
+        for(let i=0;i<items.length;i++){
+          const it = items[i] || {};
+          const k = normalizeLabelRoomKey(it.key || it.label || '');
+          if(k === '__base__'){ livingRoom = it; break; }
+        }
+        if(!livingRoom){
+          livingRoom = getRoomModelItem(meta, buildingRow, 'living')
+            || getRoomModelItem(meta, buildingRow, 'living_room')
+            || getRoomModelItem(meta, buildingRow, 'livingroom')
+            || getRoomModelItem(meta, buildingRow, 'main')
+            || getRoomModelItem(meta, buildingRow, 'base');
+        }
+        if(livingRoom){
+          if(hasTextValue(livingRoom.camera_xyz)) baseMeta.camera_xyz = livingRoom.camera_xyz;
+          else if(hasTextValue(livingRoom.cameraXyz)) baseMeta.camera_xyz = livingRoom.cameraXyz;
+          if(hasTextValue(livingRoom.camera_heading)) baseMeta.camera_heading = livingRoom.camera_heading;
+          else if(hasTextValue(livingRoom.cameraHeading)) baseMeta.camera_heading = livingRoom.cameraHeading;
+          if(hasTextValue(livingRoom.camera_pitch)) baseMeta.camera_pitch = livingRoom.camera_pitch;
+          if(hasTextValue(livingRoom.camera_look_distance)) baseMeta.camera_look_distance = livingRoom.camera_look_distance;
+          baseMeta.__baseRoomCameraSource = livingRoom.key || livingRoom.label || 'living';
+        }
+        return baseMeta;
+      }catch(_){
+        return meta || {};
+      }
+    }
+
     function clearActiveRoomModel(options){
       const keepCache = !!(options && options.keepCache);
       activeRoomModelState.token += 1;
@@ -5155,7 +5191,8 @@ async function refreshFutureProjects(bIdx){
         try{
           const meta = (interiorMetaByBuilding[sel.bIdx] || [])[sel.itemIdx] || {};
           const buildingRow = b[sel.bIdx] || {};
-          await hvFrameActiveInteriorModelCamera(baseHandle, meta, buildingRow, { burst:10, maxTries:45 });
+          const baseCameraRow = hvBuildBaseRoomCameraRow(meta, buildingRow);
+          await hvFrameActiveInteriorModelCamera(baseHandle, baseCameraRow, buildingRow, { burst:10, maxTries:45, roomKey:'__base__' });
           title.textContent = (buildingRow.name||'') + ' — ' + getItemDisplayName(meta, 'Unit');
           currentMode = 'interior';
           try{ mini.hide(); }catch(_){ }
@@ -8072,7 +8109,8 @@ function hideUnitMetaUI(){
         const ent=activeInteriorEntity || (interiorEntitiesByBuilding[idx]||[])[k] || null;
         const meta=selectedMeta||{};
         if(ent){
-          await hvFrameActiveInteriorModelCamera(ent, meta, row, { burst:10 });
+          const baseCameraRow = hvBuildBaseRoomCameraRow(meta, row);
+          await hvFrameActiveInteriorModelCamera(ent, baseCameraRow, row, { burst:10, roomKey:'__base__' });
           syncInteriorClipForSelection(meta, row, false);
           setCameraCollision(false);
           setInteriorMouseBindings(); interiorNav.enable(); setJoystickVisible(true);
