@@ -502,7 +502,26 @@ function parseFutureProjects(raw){
 
   // ========== 3D Tiles ==========
   let GOOGLE_3D_TILES = null;
-  let desiredMSE = IS_IOS ? 14 : 12;
+  let desiredMSE = IS_MOBILE ? (IS_IOS ? 20 : 18) : 12;
+
+// v39 mobile stability: during GLB creation, temporarily reduce Cesium 3D Tiles pressure.
+// This lowers peak GPU memory on phones/tablets and reduces random WebGL context crashes.
+const HV_NORMAL_RESOLUTION_SCALE = 1.0;
+const HV_MOBILE_LOADING_RESOLUTION_SCALE = 0.72;
+function hvSetMobileModelLoadMode(active){
+  try{
+    if(!IS_MOBILE || !viewer || !viewer.scene) return;
+    viewer.resolutionScale = active ? HV_MOBILE_LOADING_RESOLUTION_SCALE : HV_NORMAL_RESOLUTION_SCALE;
+    if(GOOGLE_3D_TILES){
+      GOOGLE_3D_TILES.maximumScreenSpaceError = active ? Math.max(desiredMSE, 24) : desiredMSE;
+      // Keep tile memory lower on mobile. Cesium treats this as a soft cache target.
+      try{ GOOGLE_3D_TILES.cacheBytes = active ? 96 * 1024 * 1024 : 160 * 1024 * 1024; }catch(_){ }
+      try{ GOOGLE_3D_TILES.maximumCacheOverflowBytes = active ? 32 * 1024 * 1024 : 64 * 1024 * 1024; }catch(_){ }
+      try{ GOOGLE_3D_TILES.trimLoadedTiles && GOOGLE_3D_TILES.trimLoadedTiles(); }catch(_){ }
+    }
+    requestSceneRenderBurst(3);
+  }catch(_){ }
+}
 
   // v45: cache sampled surface heights. Room switching used to call sampleHeightMostDetailed
   // for every room model, which can block model creation and make later room loads feel extremely slow.
@@ -4854,11 +4873,15 @@ async function refreshFutureProjects(bIdx){
     function beginViewLoad(message){
       viewLoadLockCount += 1;
       setSelectionControlsDisabled(true, message || 'Loading selected model...');
+      hvSetMobileModelLoadMode(true);
     }
 
     function endViewLoad(){
       viewLoadLockCount = Math.max(0, viewLoadLockCount - 1);
-      if(viewLoadLockCount === 0) setSelectionControlsDisabled(false, '');
+      if(viewLoadLockCount === 0){
+        setSelectionControlsDisabled(false, '');
+        hvSetMobileModelLoadMode(false);
+      }
     }
 
     function safeModelUrl(rawUrl){
@@ -4993,6 +5016,10 @@ async function refreshFutureProjects(bIdx){
         interiorBlobUrlsByBuilding[bIdx][itemIdx] = null;
       }
       if(interiorBlobFetchPromisesByBuilding[bIdx]) interiorBlobFetchPromisesByBuilding[bIdx][itemIdx] = null;
+      if(IS_MOBILE){
+        try{ viewer.scene.requestRender(); }catch(_){ }
+        try{ if(GOOGLE_3D_TILES && GOOGLE_3D_TILES.trimLoadedTiles) GOOGLE_3D_TILES.trimLoadedTiles(); }catch(_){ }
+      }
       if(!options.silent) requestSceneRenderBurst(4);
     }
 
@@ -7694,7 +7721,9 @@ if(saveLabelsBtn){
       const selectedValue = viewSelect.value || 'exterior';
       const isExteriorTarget = selectedValue === 'exterior';
       const useExteriorReveal = selectedTargetHasExteriorReveal();
-      const shouldUseOverlay = !useExteriorReveal && (!isExteriorTarget || currentMode !== 'exterior');
+      const shouldUseOverlay = (!isExteriorTarget || currentMode !== 'exterior');
+// v39: unit-location reveal also gets a loading overlay now.
+// Without it, mobile looked frozen while the GLB was being created before the cinematic reveal.
       if(!shouldUseOverlay){
         return updateView(idx);
       }
@@ -7847,10 +7876,16 @@ function hideUnitMetaUI(){
         let loadPromise = null;
         try{
           loadPromise = hvTryEnsureInteriorEntityForMarker(idx, selectedIndex);
-          if(useUnitExteriorReveal){
-            await playSelectedUnitExteriorReveal(idx, selectedMeta, loadPromise);
-          }
+
+          // v39: do not let the screen sit frozen while we wait for the selected unit GLB.
+          // First load the model under the transition overlay, then hide it and start the exterior reveal.
           activeInteriorEntity = await loadPromise;
+          if(thisSwitchToken !== interiorSwitchToken) return;
+
+          if(useUnitExteriorReveal && activeInteriorEntity){
+            try{ await hideSceneTransition(); }catch(_){ }
+            await playSelectedUnitExteriorReveal(idx, selectedMeta, Promise.resolve(activeInteriorEntity));
+          }
         } finally {
           if(didBeginLoad){ endViewLoad(); didBeginLoad = false; }
         }
@@ -8078,9 +8113,10 @@ function hideUnitMetaUI(){
         syncInteriorClipForSelection(meta, row, false);
         setCameraCollision(false);
         // Amenities should behave like interior navigation, not exterior orbit mode.
+        // v39 fix: mobile amenities need the same joystick as units.
         setInteriorMouseBindings();
         interiorNav.enable();
-        setJoystickVisible(false);
+        setJoystickVisible(cameraJoystickEnabledByUser);
 
         applyFixedInteriorFov();
 
