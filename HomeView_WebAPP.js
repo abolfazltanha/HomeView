@@ -504,22 +504,54 @@ function parseFutureProjects(raw){
   let GOOGLE_3D_TILES = null;
   let desiredMSE = IS_MOBILE ? (IS_IOS ? 20 : 18) : 12;
 
-// v39 mobile stability: during GLB creation, temporarily reduce Cesium 3D Tiles pressure.
-// This lowers peak GPU memory on phones/tablets and reduces random WebGL context crashes.
-const HV_NORMAL_RESOLUTION_SCALE = 1.0;
+// v40 stability: during GLB creation, temporarily reduce Cesium render / tile pressure.
+// Do not hide Google 3D Tiles because the loading overlay is transparent; instead, make
+// the scene cheaper while the model is being decoded/created, then restore the user's preset.
 const HV_MOBILE_LOADING_RESOLUTION_SCALE = 0.72;
+const HV_DESKTOP_LOADING_RESOLUTION_SCALE = 0.75;
+let hvModelLoadModeSnapshot = null;
 function hvSetMobileModelLoadMode(active){
   try{
-    if(!IS_MOBILE || !viewer || !viewer.scene) return;
-    viewer.resolutionScale = active ? HV_MOBILE_LOADING_RESOLUTION_SCALE : HV_NORMAL_RESOLUTION_SCALE;
-    if(GOOGLE_3D_TILES){
-      GOOGLE_3D_TILES.maximumScreenSpaceError = active ? Math.max(desiredMSE, 24) : desiredMSE;
-      // Keep tile memory lower on mobile. Cesium treats this as a soft cache target.
-      try{ GOOGLE_3D_TILES.cacheBytes = active ? 96 * 1024 * 1024 : 160 * 1024 * 1024; }catch(_){ }
-      try{ GOOGLE_3D_TILES.maximumCacheOverflowBytes = active ? 32 * 1024 * 1024 : 64 * 1024 * 1024; }catch(_){ }
-      try{ GOOGLE_3D_TILES.trimLoadedTiles && GOOGLE_3D_TILES.trimLoadedTiles(); }catch(_){ }
+    if(!viewer || !viewer.scene) return;
+    if(active){
+      if(!hvModelLoadModeSnapshot){
+        const fxaaStage = viewer.scene && viewer.scene.postProcessStages ? viewer.scene.postProcessStages.fxaa : null;
+        hvModelLoadModeSnapshot = {
+          resolutionScale: viewer.resolutionScale,
+          fxaaEnabled: fxaaStage ? fxaaStage.enabled : null,
+          msaaSamples: ('msaaSamples' in viewer.scene) ? viewer.scene.msaaSamples : null,
+          tilesMSE: GOOGLE_3D_TILES ? GOOGLE_3D_TILES.maximumScreenSpaceError : null,
+          cacheBytes: GOOGLE_3D_TILES ? GOOGLE_3D_TILES.cacheBytes : null,
+          maximumCacheOverflowBytes: GOOGLE_3D_TILES ? GOOGLE_3D_TILES.maximumCacheOverflowBytes : null
+        };
+      }
+      viewer.resolutionScale = IS_MOBILE ? HV_MOBILE_LOADING_RESOLUTION_SCALE : HV_DESKTOP_LOADING_RESOLUTION_SCALE;
+      try{ const fxaaStage = viewer.scene.postProcessStages.fxaa; if(fxaaStage) fxaaStage.enabled = false; }catch(_){ }
+      try{ if('msaaSamples' in viewer.scene) viewer.scene.msaaSamples = 1; }catch(_){ }
+      if(GOOGLE_3D_TILES){
+        GOOGLE_3D_TILES.maximumScreenSpaceError = IS_MOBILE ? Math.max(desiredMSE, 24) : Math.max(desiredMSE, 48);
+        // Keep tile memory lower while loading. Cesium treats this as a soft cache target.
+        try{ GOOGLE_3D_TILES.cacheBytes = IS_MOBILE ? 96 * 1024 * 1024 : 192 * 1024 * 1024; }catch(_){ }
+        try{ GOOGLE_3D_TILES.maximumCacheOverflowBytes = IS_MOBILE ? 32 * 1024 * 1024 : 64 * 1024 * 1024; }catch(_){ }
+        try{ GOOGLE_3D_TILES.trimLoadedTiles && GOOGLE_3D_TILES.trimLoadedTiles(); }catch(_){ }
+      }
+    }else{
+      const snap = hvModelLoadModeSnapshot;
+      hvModelLoadModeSnapshot = null;
+      if(snap){
+        if(Number.isFinite(Number(snap.resolutionScale))) viewer.resolutionScale = snap.resolutionScale;
+        try{ const fxaaStage = viewer.scene.postProcessStages.fxaa; if(fxaaStage && snap.fxaaEnabled !== null) fxaaStage.enabled = snap.fxaaEnabled; }catch(_){ }
+        try{ if('msaaSamples' in viewer.scene && snap.msaaSamples !== null) viewer.scene.msaaSamples = snap.msaaSamples; }catch(_){ }
+        if(GOOGLE_3D_TILES){
+          try{ GOOGLE_3D_TILES.maximumScreenSpaceError = (snap.tilesMSE !== null && snap.tilesMSE !== undefined) ? snap.tilesMSE : desiredMSE; }catch(_){ }
+          try{ if(snap.cacheBytes !== null && snap.cacheBytes !== undefined) GOOGLE_3D_TILES.cacheBytes = snap.cacheBytes; }catch(_){ }
+          try{ if(snap.maximumCacheOverflowBytes !== null && snap.maximumCacheOverflowBytes !== undefined) GOOGLE_3D_TILES.maximumCacheOverflowBytes = snap.maximumCacheOverflowBytes; }catch(_){ }
+        }
+      }else if(GOOGLE_3D_TILES){
+        try{ GOOGLE_3D_TILES.maximumScreenSpaceError = desiredMSE; }catch(_){ }
+      }
     }
-    requestSceneRenderBurst(3);
+    requestSceneRenderBurst(4);
   }catch(_){ }
 }
 
@@ -5016,21 +5048,18 @@ async function refreshFutureProjects(bIdx){
         interiorBlobUrlsByBuilding[bIdx][itemIdx] = null;
       }
       if(interiorBlobFetchPromisesByBuilding[bIdx]) interiorBlobFetchPromisesByBuilding[bIdx][itemIdx] = null;
-      if(IS_MOBILE){
-        try{ viewer.scene.requestRender(); }catch(_){ }
-        try{ if(GOOGLE_3D_TILES && GOOGLE_3D_TILES.trimLoadedTiles) GOOGLE_3D_TILES.trimLoadedTiles(); }catch(_){ }
-      }
+      try{ viewer.scene.requestRender(); }catch(_){ }
+      try{ if(GOOGLE_3D_TILES && GOOGLE_3D_TILES.trimLoadedTiles) GOOGLE_3D_TILES.trimLoadedTiles(); }catch(_){ }
       if(!options.silent) requestSceneRenderBurst(4);
     }
 
     activeRoomModelState = { key:'', currentRoomKey:'__base__', handle:null, cache:new Map(), token:0, lastBlobUrl:null };
 
-    // Mobile memory policy:
-    // On phones/tablets, a hidden Cesium model can still keep its GPU buffers/textures alive.
-    // Desktop keeps the fast cached/hidden-model behavior.
-    // Mobile destroys the current GPU model BEFORE loading the next room, so Safari/iPhone does not hit
-    // the peak-memory moment where Living + Bedroom/Bathroom are both alive during Model.fromGltfAsync.
-    const HV_DESTROY_ROOM_MODELS_ON_SWITCH = IS_MOBILE;
+    // Room memory policy:
+    // A hidden Cesium model can still keep GPU buffers/textures alive. Keep only one active interior/room
+    // model in GPU memory on both desktop and mobile. Mobile pre-destroys before loading to avoid peak
+    // Safari/WebGL memory. Desktop destroys the previous/base model after the new room is visible.
+    const HV_DESTROY_ROOM_MODELS_ON_SWITCH = true;
     const HV_PRE_DESTROY_ROOM_MODELS_BEFORE_LOAD = IS_MOBILE;
     let activeRoomModelLoading = false;
     const HV_ROOM_LOAD_PROFILING = false;
@@ -5210,9 +5239,16 @@ async function refreshFutureProjects(bIdx){
         hvReleaseRoomBlobUrl();
         let baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
         if(!baseHandle){
-          // On mobile the base/living model may have been destroyed to free GPU memory.
+          // The base/living model may have been destroyed to free GPU memory.
           // Re-create it only when the user actually returns to it.
-          baseHandle = await hvTryEnsureInteriorEntityForMarker(sel.bIdx, sel.itemIdx);
+          try{ showSceneTransition('Loading Living Room...'); }catch(_){ }
+          beginViewLoad('Loading Living Room...');
+          try{
+            baseHandle = await hvTryEnsureInteriorEntityForMarker(sel.bIdx, sel.itemIdx);
+          }finally{
+            endViewLoad();
+            try{ hideSceneTransition().catch(function(){}); }catch(_){ }
+          }
         }
         hvShowModelHandle(baseHandle, true);
         try{
@@ -5290,7 +5326,8 @@ async function applyRoomModelForCurrent(actionValue){
           }
           baseHandleToDestroy = null;
         }else{
-          // Desktop keeps the fast behavior: hide old models, then the user can return instantly.
+          // Desktop keeps the previous model hidden only until the new room is visible,
+          // then deferred cleanup below destroys its GPU buffers/textures.
           if(baseHandle) hvShowModelHandle(baseHandle, false);
           if(previousRoomHandle) hvShowModelHandle(previousRoomHandle, false);
         }
@@ -5342,9 +5379,9 @@ async function applyRoomModelForCurrent(actionValue){
         await hvFrameActiveInteriorModelCamera(handle, roomRow, meta || buildingRow, { burst:3, roomKey: activeRoomModelState.currentRoomKey });
         hvRoomPerf('manual camera frame ' + (room.label || room.key || cleanActionValue || 'room'), cameraStart);
 
-        // Desktop: no cleanup, for instant return.
-        // Mobile pre-destroys before load, so there is nothing left to defer here.
-        // Non-pre-destroy fallback: clean old GPU resources after the new room is visible.
+        // Clean old GPU resources after the new room is visible.
+        // Mobile pre-destroys before load, so there is usually nothing left to defer here.
+        // Desktop now also cleans up, so Living Room + Bedroom + other rooms do not stay in GPU memory.
         if(HV_DESTROY_ROOM_MODELS_ON_SWITCH && !HV_PRE_DESTROY_ROOM_MODELS_BEFORE_LOAD){
           if(previousRoomHandle){
             hvScheduleDeferredDestroy('previous room', function(){
