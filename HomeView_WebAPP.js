@@ -599,7 +599,8 @@ function hvSetMobileModelLoadMode(active){
           return v;
         } catch(e){}
       }
-      try{ hvSurfaceHeightCache.set(key, 0); }catch(_){ }
+      // Do not cache fallback 0 here. Google 3D Tiles may not be ready yet;
+      // caching 0 would permanently place POIs/buildings at sea level until reload.
       return 0;
     })();
 
@@ -615,11 +616,23 @@ function hvSetMobileModelLoadMode(active){
       const plat = props.baseLat && props.baseLat.getValue ? props.baseLat.getValue() : null;
       const plng = props.baseLng && props.baseLng.getValue ? props.baseLng.getValue() : null;
       const groundOffset = props.groundOffset && props.groundOffset.getValue ? Number(props.groundOffset.getValue()) : 0;
+      const isLeaderLine = props.hvPoiLeaderLine && props.hvPoiLeaderLine.getValue ? !!props.hvPoiLeaderLine.getValue() : false;
+      const isGroundAnchor = props.hvPoiGroundAnchor && props.hvPoiGroundAnchor.getValue ? !!props.hvPoiGroundAnchor.getValue() : false;
       if(plat==null||plng==null) continue;
       try{
         const h = await getSurfaceHeight(plng, plat);
-        const z = (h||0) + groundOffset;
-        ent.position = Cesium.Cartesian3.fromDegrees(plng, plat, z);
+        const groundZ = (h || 0) + 0.8;
+        const topZ = (h || 0) + groundOffset;
+        if(isLeaderLine && ent.polyline){
+          ent.polyline.positions = new Cesium.ConstantProperty([
+            Cesium.Cartesian3.fromDegrees(plng, plat, groundZ),
+            Cesium.Cartesian3.fromDegrees(plng, plat, topZ)
+          ]);
+        }else if(isGroundAnchor){
+          ent.position = Cesium.Cartesian3.fromDegrees(plng, plat, groundZ);
+        }else{
+          ent.position = Cesium.Cartesian3.fromDegrees(plng, plat, topZ);
+        }
       }catch(e){}
     }
   }
@@ -4683,6 +4696,9 @@ async function refreshFutureProjects(bIdx){
 
     // POI sources
     const poiSources=[]; const poiIndexById=new Map(); const pinBuilder=new Cesium.PinBuilder();
+    const POI_LABEL_HEIGHT_M = IS_MOBILE ? 34 : 42;
+    const POI_LEADER_LINE_WIDTH = IS_MOBILE ? 1.5 : 2.0;
+    const POI_GROUND_DOT_SIZE = IS_MOBILE ? 7 : 9;
     function colorForType(type){ return Cesium.Color.fromCssColorString(getAmenityStyle(type).color); }
     function poiBillboard(type,icon){ const col=colorForType(type); const txt = (icon || getAmenityIcon(type) || '').trim(); const img = txt ? pinBuilder.fromText(txt,col,42).toDataURL() : pinBuilder.fromColor(col,32).toDataURL(); return { image:img, verticalOrigin:Cesium.VerticalOrigin.BOTTOM, scale:1, disableDepthTestDistance:Number.POSITIVE_INFINITY }; }
     function metersBetween(a,b){ const g=new Cesium.EllipsoidGeodesic(a,b); return g.surfaceDistance; }
@@ -4856,8 +4872,53 @@ async function refreshFutureProjects(bIdx){
         const poiRadius = getPoiRadiusMeters(br, poi, defaultRadius);
         const dist=metersBetween(center, Cesium.Cartographic.fromDegrees(plng,plat)); if(dist>poiRadius) return;
         const type=(poi.type||'').toLowerCase().trim();
+        const poiHeight = toNum(firstFilled(
+          poi.height,
+          poi.height_m,
+          poi.altitude,
+          poi.elevation,
+          poi.z,
+          poi.ground_offset,
+          poi.groundOffset
+        ));
+        // Leader-line POI layout:
+        // Keep the amenity card floating above the surface, then draw a vertical
+        // anchor line down to the real terrain/3D-tiles surface. This makes dense
+        // nearby amenities easier to read and removes the need to manually tune
+        // every POI height in the Sheet.
+        const groundOffset = Number.isFinite(poiHeight) ? Math.max(8, poiHeight) : POI_LABEL_HEIGHT_M;
+        const approxGroundZ = 0.8;
+        const approxTopZ = groundOffset;
+
+        const lineEnt = ds.entities.add({
+          polyline: {
+            positions: [
+              Cesium.Cartesian3.fromDegrees(plng, plat, approxGroundZ),
+              Cesium.Cartesian3.fromDegrees(plng, plat, approxTopZ)
+            ],
+            width: POI_LEADER_LINE_WIDTH,
+            material: Cesium.Color.WHITE.withAlpha(0.88),
+            clampToGround: false
+          },
+          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvPoiLeaderLine:true },
+          show: i===0
+        });
+
+        const groundEnt = ds.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(plng, plat, approxGroundZ),
+          point: {
+            pixelSize: POI_GROUND_DOT_SIZE,
+            color: Cesium.Color.WHITE.withAlpha(0.92),
+            outlineColor: Cesium.Color.fromCssColorString(getAmenityStyle(type).color).withAlpha(0.95),
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY
+          },
+          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvPoiGroundAnchor:true },
+          show: i===0
+        });
+
         const ent=ds.entities.add({
-          position: Cesium.Cartesian3.fromDegrees(plng,plat,0),
+          position: Cesium.Cartesian3.fromDegrees(plng,plat,groundOffset),
           billboard: (function(){
             const lbl = makePoiLabelBillboardImage(poi, type, dist);
             return {
@@ -4869,10 +4930,12 @@ async function refreshFutureProjects(bIdx){
               disableDepthTestDistance: Number.POSITIVE_INFINITY
             };
           })(),
-          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:2 },
+          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset },
           show: i===0
         });
         poiIndexById.set(ent.id,{dsIndex:i});
+        poiIndexById.set(lineEnt.id,{dsIndex:i});
+        poiIndexById.set(groundEnt.id,{dsIndex:i});
         types.add(type||'other');
       });
 
@@ -5008,7 +5071,9 @@ async function refreshFutureProjects(bIdx){
               if(panoramaSelection) panoramaSelectionsByKey.set(makeCustomizationSelectionKey(bIdx, itemIdx), panoramaSelection);
             }
             if(isPanoramaRow(meta) && panoramaSelection && panoramaSelection.url){
-              await preloadPanoramaSelectionImage(panoramaSelection);
+              panoramaSelection = hvRuntimePanoramaSelection(panoramaSelection);
+              panoramaSelectionsByKey.set(makeCustomizationSelectionKey(bIdx, itemIdx), panoramaSelection);
+              await preloadPanoramaSelectionImage(panoramaSelection, { forceReload: true });
             }
             const ent = await createInteriorModel(buildingRow, meta, viewer, blobUrl, finishSelections, panoramaSelection);
             if(!interiorEntitiesByBuilding[bIdx]) interiorEntitiesByBuilding[bIdx]=[];
@@ -5477,10 +5542,41 @@ async function applyRoomModelForCurrent(actionValue){
     const panoramaSelectionsByKey = new Map();
     let panoramaApplyToken = 0;
     const panoramaImagePreloadCache = new Map();
-    function preloadPanoramaImage(url){
+    function hvStripPanoramaCacheBust(url){
       const raw = String(url || '').trim();
+      if(!raw) return '';
+      try{
+        const u = new URL(raw, window.location.href);
+        u.searchParams.delete('hvpan');
+        return u.href;
+      }catch(_){
+        return raw.replace(/([?&])hvpan=\d+(&?)/, function(match, lead, tail){ return tail ? lead : ''; }).replace(/[?&]$/, '');
+      }
+    }
+
+    function hvMakePanoramaRuntimeUrl(url){
+      const base = hvStripPanoramaCacheBust(url);
+      if(!base) return '';
+      return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'hvpan=' + Date.now();
+    }
+
+    function hvRuntimePanoramaSelection(item){
+      if(!item || !item.url) return item;
+      const originalUrl = item.__hvOriginalUrl || hvStripPanoramaCacheBust(item.url);
+      const copy = Object.assign({}, item);
+      copy.__hvOriginalUrl = originalUrl;
+      copy.url = hvMakePanoramaRuntimeUrl(originalUrl);
+      return copy;
+    }
+
+    function preloadPanoramaImage(url, options){
+      const raw = String(url || '').trim();
+      const forceReload = !!(options && options.forceReload);
       if(!raw) return Promise.resolve(false);
-      if(panoramaImagePreloadCache.has(raw)) return panoramaImagePreloadCache.get(raw);
+      const cacheKey = hvStripPanoramaCacheBust(raw) || raw;
+      if(!forceReload && panoramaImagePreloadCache.has(cacheKey)) return panoramaImagePreloadCache.get(cacheKey);
+      if(forceReload){ try{ panoramaImagePreloadCache.delete(cacheKey); }catch(_){ } }
+      const src = forceReload ? hvMakePanoramaRuntimeUrl(cacheKey) : raw;
       const p = new Promise(function(resolve){
         let settled = false;
         const img = new Image();
@@ -5488,11 +5584,11 @@ async function applyRoomModelForCurrent(actionValue){
           if(settled) return;
           settled = true;
           try{
-            if(!ok) panoramaImagePreloadCache.delete(raw);
+            if(!ok) panoramaImagePreloadCache.delete(cacheKey);
           }catch(_){ }
           resolve(!!ok);
         }
-        const timer = setTimeout(function(){ done(false); }, 12000);
+        const timer = setTimeout(function(){ done(false); }, 15000);
         img.onload = function(){
           clearTimeout(timer);
           try{
@@ -5513,14 +5609,14 @@ async function applyRoomModelForCurrent(actionValue){
         try{ img.crossOrigin = 'anonymous'; }catch(_){ }
         img.decoding = 'async';
         img.loading = 'eager';
-        img.src = raw;
+        img.src = src;
       });
-      panoramaImagePreloadCache.set(raw, p);
+      panoramaImagePreloadCache.set(cacheKey, p);
       return p;
     }
-    async function preloadPanoramaSelectionImage(item){
+    async function preloadPanoramaSelectionImage(item, options){
       if(!item || !item.url) return false;
-      try{ return await preloadPanoramaImage(item.url); }catch(_){ return false; }
+      try{ return await preloadPanoramaImage(item.url, options); }catch(_){ return false; }
     }
     function makeCustomizationSelectionKey(bIdx, itemIdx){ return String(bIdx) + ':' + String(itemIdx); }
 
@@ -7524,13 +7620,14 @@ if(saveLabelsBtn){
       if(!item || !item.url) return false;
 
       const key = makeCustomizationSelectionKey(sel.bIdx, sel.itemIdx);
-      panoramaSelectionsByKey.set(key, item);
+      const runtimeItem = hvRuntimePanoramaSelection(item);
+      panoramaSelectionsByKey.set(key, runtimeItem);
 
       const thisToken = ++panoramaApplyToken;
       beginViewLoad('Loading panorama...');
       await showPanoramaTransition('Loading panorama...');
       try{
-        await preloadPanoramaSelectionImage(item);
+        await preloadPanoramaSelectionImage(runtimeItem, { forceReload: true });
         if(thisToken !== panoramaApplyToken) return true;
         destroyInteriorEntity(sel.bIdx, sel.itemIdx, { keepBlobUrl: true, silent: true });
         const reloaded = await hvTryEnsureInteriorEntityForMarker(sel.bIdx, sel.itemIdx);
@@ -8086,11 +8183,10 @@ function hideUnitMetaUI(){
         hideFinishCard();
         if(isEditorAdmin()) populateAdminEditor(selectedMeta, row);
         await trackUnitView(firstFilled(meta.building_key, row.building_key, row.name, row.title), getItemDisplayName(meta));
-        const panoNames = panoCfg.items.map(function(it){ return it.title || it.key; }).filter(Boolean);
         const dBase = getItemDescription(selectedMeta, row).trim();
-        const dExtra = activePano ? ('Current panorama: ' + (activePano.title || activePano.key || '—')) : '';
-        const dList = panoNames.length ? ('Available panoramas: ' + panoNames.join(', ')) : '';
-        const d = [dBase, dExtra, dList].filter(Boolean).join('\n');
+        // Public UI: do not show internal panorama keys/names such as Part1, Part2, ...
+        // Those are project/navigation metadata and make the listing description look like a debug panel.
+        const d = dBase;
         descBox.style.display = d ? 'block' : 'none';
         descBox.textContent = d;
         adminBuildingViewsCard.style.display = 'none';
