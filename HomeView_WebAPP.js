@@ -47,6 +47,42 @@ forceLightCSS.textContent = `
 `;
 document.head.appendChild(forceLightCSS);
 
+
+// ===== HomeView mobile UX polish =====
+// Keeps the first mobile view clean: compact controls, compact/hidden minimap, no auto-hide surprises.
+const hvMobilePolishCSS = document.createElement('style');
+hvMobilePolishCSS.textContent = `
+  @media (max-width: 640px), (pointer: coarse) {
+    #chartContainer {
+      left: 10px !important;
+      top: 10px !important;
+      width: min(82vw, 300px) !important;
+      max-height: 46vh !important;
+      padding: 10px !important;
+      border-radius: 14px !important;
+      font-size: 13px !important;
+    }
+    #chartContainer select,
+    #chartContainer input,
+    #chartContainer button {
+      min-height: 34px !important;
+      font-size: 12px !important;
+    }
+    #miniTopRight {
+      width: 112px !important;
+      height: 112px !important;
+      right: 10px !important;
+      top: 10px !important;
+      border-radius: 12px !important;
+    }
+    #compass {
+      transform: scale(.82);
+      transform-origin: top right;
+    }
+  }
+`;
+document.head.appendChild(hvMobilePolishCSS);
+
 Promise.all([
   new Promise(r=>chartScript.onload=r),
   new Promise(r=>papaScript.onload=r),
@@ -137,8 +173,8 @@ Promise.all([
   const DEFAULT_INTERIOR_FOV_DEG = 100;
   let currentModelQualityPreset = 'standard';
   let cameraJoystickEnabledByUser = true;
-  let minimapEnabledByUser = true;
-  let autoHideUIEnabled = true;
+  let minimapEnabledByUser = !IS_MOBILE;
+  let autoHideUIEnabled = false; // UX polish: never hide controls automatically, especially on mobile.
   var navigationLabelsEnabled = true;
   var infoLabelsEnabled = false;
   let uiAutoHidden = false;
@@ -244,6 +280,37 @@ Promise.all([
   // Disable Cesium's default picked-entity double-click zoom. HomeView controls all camera targets explicitly.
   try{ viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK); }catch(_){ }
   try{ viewer.screenSpaceEventHandler && viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK); }catch(_){ }
+
+  // v42: hard-block double-click / double-tap camera focus stealing.
+  // Cesium can re-bind handlers internally and mobile browsers may emit dblclick-style gestures.
+  // We swallow those events at the canvas capture layer so a terrain double-click can never free
+  // HomeView's building orbit or change the camera target.
+  function hvBlockDefaultDoubleClickFocus(){
+    try{
+      const canvas = viewer && viewer.scene && viewer.scene.canvas;
+      if(!canvas || canvas.__hvDoubleClickBlocked) return;
+      canvas.__hvDoubleClickBlocked = true;
+      ['dblclick'].forEach(function(type){
+        canvas.addEventListener(type, function(evt){
+          try{ evt.preventDefault(); evt.stopPropagation(); if(evt.stopImmediatePropagation) evt.stopImmediatePropagation(); }catch(_){ }
+          try{ hvRestoreExteriorOrbitIfNeeded('dblclick'); }catch(_){ }
+          return false;
+        }, true);
+      });
+      try{
+        viewer.cesiumWidget.screenSpaceEventHandler.setInputAction(function(){
+          try{ hvRestoreExteriorOrbitIfNeeded('cesium-left-double-click'); }catch(_){ }
+        }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+      }catch(_){ }
+      try{
+        if(viewer.screenSpaceEventHandler){
+          viewer.screenSpaceEventHandler.setInputAction(function(){
+            try{ hvRestoreExteriorOrbitIfNeeded('viewer-left-double-click'); }catch(_){ }
+          }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+        }
+      }catch(_){ }
+    }catch(_){ }
+  }
 
   // current view mode (needed for FOV slider)
   let currentMode = 'exterior';
@@ -2404,7 +2471,7 @@ function hvUpdateMarkerSheetOutputWithCamera(){
   function enterMarkerEditorCameraMode(){
     try{
       stopCameraTracking();
-      setInteriorMouseBindings();
+      setCinematicSetupMouseBindings();
       interiorNav.enable();
       setJoystickVisible(true);
       setCameraCollision(false);
@@ -2916,21 +2983,192 @@ async function refreshFutureProjects(bIdx){
 
   // ===== Mouse bindings =====
   const ssc = viewer.scene.screenSpaceCameraController;
+
+
+  // ===== v43 Exterior Orbit Controller =====
+  // Building View must behave like a product viewer around the selected building, not like a free Cesium camera.
+  // Cesium's native double-click / terrain focus / tilt paths can break the orbit frame and let the camera go
+  // below Google 3D Tiles. This controller owns exterior drag + zoom + limited vertical orbit.
+  const hvExteriorOrbitController = (function(){
+    let enabled = false;
+    let installed = false;
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+    let lastPinchDistance = 0;
+    const pointers = new Map();
+    const canvas = viewer.scene.canvas;
+    const state = {
+      center: null,
+      heading: 0,
+      pitch: Cesium.Math.toRadians(-28),
+      distance: 120,
+      minDistance: IS_MOBILE ? 20 : 8,
+      maxDistance: 6000
+    };
+
+    function clampDistance(d){
+      const minD = Math.max(IS_MOBILE ? 20 : 8, Number(state.minDistance) || 8);
+      const maxD = Math.max(minD + 1, Number(state.maxDistance) || 6000);
+      return Math.max(minD, Math.min(maxD, Number(d) || minD));
+    }
+    function clampPitch(p){
+      // Keep a normal above-ground building-view angle. Users can orbit up/down,
+      // but never tilt through the terrain. Negative pitch looks down at the building.
+      const lo = Cesium.Math.toRadians(-68);
+      const hi = Cesium.Math.toRadians(-10);
+      const v = Number(p);
+      return Math.max(lo, Math.min(hi, Number.isFinite(v) ? v : Cesium.Math.toRadians(-28)));
+    }
+    function getPinchDistance(){
+      const vals = Array.from(pointers.values());
+      if(vals.length < 2) return 0;
+      const dx = vals[0].x - vals[1].x;
+      const dy = vals[0].y - vals[1].y;
+      return Math.sqrt(dx*dx + dy*dy);
+    }
+    function apply(){
+      if(!enabled || !state.center) return;
+      try{
+        const frame = Cesium.Transforms.eastNorthUpToFixedFrame(state.center);
+        const offset = new Cesium.HeadingPitchRange(
+          state.heading,
+          clampPitch(state.pitch),
+          clampDistance(state.distance)
+        );
+        viewer.scene.camera.lookAtTransform(frame, offset);
+        try{ viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }catch(_){ }
+        requestSceneRenderBurst(2);
+      }catch(_){ }
+    }
+    function setState(center, heading, pitch, distance, options){
+      try{
+        if(center) state.center = Cesium.Cartesian3.clone(center);
+        if(Number.isFinite(Number(heading))) state.heading = Number(heading);
+        state.pitch = clampPitch(pitch);
+        state.distance = clampDistance(distance);
+        if(options && Number.isFinite(Number(options.minDistance))) state.minDistance = Math.max(1, Number(options.minDistance));
+        if(options && Number.isFinite(Number(options.maxDistance))) state.maxDistance = Math.max(state.minDistance + 1, Number(options.maxDistance));
+        apply();
+      }catch(_){ }
+    }
+    function onPointerDown(evt){
+      if(!enabled) return;
+      try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){ }
+      pointers.set(evt.pointerId, { x:evt.clientX, y:evt.clientY });
+      if(pointers.size === 1){
+        dragging = true;
+        lastX = evt.clientX;
+        lastY = evt.clientY;
+      }else if(pointers.size === 2){
+        dragging = false;
+        lastPinchDistance = getPinchDistance();
+      }
+      try{ canvas.setPointerCapture && canvas.setPointerCapture(evt.pointerId); }catch(_){ }
+    }
+    function onPointerMove(evt){
+      if(!enabled || !pointers.has(evt.pointerId)) return;
+      try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){ }
+      pointers.set(evt.pointerId, { x:evt.clientX, y:evt.clientY });
+      if(pointers.size >= 2){
+        const d = getPinchDistance();
+        if(d > 2 && lastPinchDistance > 2){
+          // Fingers move apart => zoom in; fingers move together => zoom out.
+          state.distance = clampDistance(state.distance * (lastPinchDistance / d));
+          apply();
+        }
+        lastPinchDistance = d;
+        return;
+      }
+      if(dragging){
+        const dx = evt.clientX - lastX;
+        const dy = evt.clientY - lastY;
+        lastX = evt.clientX;
+        lastY = evt.clientY;
+        state.heading -= dx * (IS_MOBILE ? 0.0075 : 0.0055);
+        // Vertical drag gives a controlled up/down orbit, but pitch is clamped
+        // before the camera is applied, so there is no underground jump.
+        state.pitch = clampPitch(state.pitch - dy * (IS_MOBILE ? 0.0048 : 0.0036));
+        apply();
+      }
+    }
+    function onPointerUp(evt){
+      if(!enabled) return;
+      pointers.delete(evt.pointerId);
+      try{ canvas.releasePointerCapture && canvas.releasePointerCapture(evt.pointerId); }catch(_){ }
+      if(pointers.size === 0){ dragging = false; lastPinchDistance = 0; }
+      else if(pointers.size === 1){
+        const v = Array.from(pointers.values())[0];
+        dragging = true; lastX = v.x; lastY = v.y;
+      }else if(pointers.size === 2){
+        lastPinchDistance = getPinchDistance();
+      }
+    }
+    function onWheel(evt){
+      if(!enabled) return;
+      try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){ }
+      const dy = Number(evt.deltaY) || 0;
+      const factor = Math.exp(dy * 0.0012);
+      state.distance = clampDistance(state.distance * factor);
+      apply();
+    }
+    function swallow(evt){
+      if(!enabled) return;
+      try{ evt.preventDefault(); evt.stopPropagation(); if(evt.stopImmediatePropagation) evt.stopImmediatePropagation(); }catch(_){ }
+      apply();
+      return false;
+    }
+    function install(){
+      if(installed || !canvas) return;
+      installed = true;
+      canvas.addEventListener('pointerdown', onPointerDown, true);
+      canvas.addEventListener('pointermove', onPointerMove, true);
+      canvas.addEventListener('pointerup', onPointerUp, true);
+      canvas.addEventListener('pointercancel', onPointerUp, true);
+      canvas.addEventListener('wheel', onWheel, { capture:true, passive:false });
+      canvas.addEventListener('dblclick', swallow, true);
+      canvas.addEventListener('contextmenu', swallow, true);
+    }
+    function enable(){
+      install();
+      enabled = true;
+      dragging = false;
+      pointers.clear();
+      lastPinchDistance = 0;
+      try{ canvas.style.touchAction = 'none'; }catch(_){ }
+      // Native Cesium inputs stay OFF in Building View. Our controller handles only safe orbit + zoom.
+      try{
+        ssc.enableInputs = false;
+        ssc.enableRotate = false;
+        ssc.enableTranslate = false;
+        ssc.enableTilt = false;
+        ssc.enableLook = false;
+        ssc.enableZoom = false;
+      }catch(_){ }
+      apply();
+    }
+    function disable(){
+      enabled = false;
+      dragging = false;
+      pointers.clear();
+      lastPinchDistance = 0;
+      try{ canvas.style.touchAction = ''; }catch(_){ }
+    }
+    return { enable:enable, disable:disable, setState:setState, apply:apply, isEnabled:function(){ return enabled; } };
+  })();
   function setExteriorMouseBindings(){
     panoramaDragController.disable();
     viewer.scene.camera.constrainedAxis = Cesium.Cartesian3.UNIT_Z;
-    ssc.enableInputs = true;
-    ssc.enableRotate = true;
-    ssc.enableTranslate = false;
-    ssc.enableTilt = true;
-    ssc.enableLook = false;
-    ssc.enableZoom = true;
-    ssc.rotateEventTypes = [Cesium.CameraEventType.LEFT_DRAG];
-    ssc.translateEventTypes = [];
-    ssc.tiltEventTypes = [Cesium.CameraEventType.RIGHT_DRAG, Cesium.CameraEventType.PINCH];
-    ssc.lookEventTypes = [];
+    try{ setCameraCollision(true); }catch(_){ }
+
+    // v44: public Building View uses HomeView's safe orbit controller.
+    // It supports horizontal orbit, limited vertical orbit and zoom, but it never allows
+    // terrain double-click focus or underground tilt.
+    try{ hvExteriorOrbitController.enable(); }catch(_){ }
+    try{ hvBlockDefaultDoubleClickFocus(); }catch(_){ }
   }
   function setInteriorMouseBindings(){
+    try{ hvExteriorOrbitController.disable(); }catch(_){ }
     panoramaDragController.disable();
     viewer.scene.camera.constrainedAxis = undefined;
     ssc.enableInputs = true;
@@ -2939,7 +3177,36 @@ async function refreshFutureProjects(bIdx){
     ssc.lookEventTypes=[Cesium.CameraEventType.LEFT_DRAG];
     ssc.rotateEventTypes=[]; ssc.translateEventTypes=[]; ssc.tiltEventTypes=[];
   }
+
+  function setCinematicSetupMouseBindings(){
+    // Admin-only setup mode: restore native camera controls so Start/End waypoints
+    // can be framed quickly. This mode is only active while the Cinematic Camera
+    // panel is open, so public users still get the safe HomeView orbit controller.
+    try{ hvExteriorOrbitController.disable(); }catch(_){ }
+    try{ panoramaDragController.disable(); }catch(_){ }
+    try{ viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); }catch(_){ }
+    viewer.scene.camera.constrainedAxis = undefined;
+    try{ setCameraCollision(true); }catch(_){ }
+    try{
+      ssc.enableInputs = true;
+      ssc.enableRotate = true;
+      ssc.enableTranslate = true;
+      ssc.enableTilt = true;
+      ssc.enableLook = true;
+      ssc.enableZoom = true;
+      ssc.rotateEventTypes = [Cesium.CameraEventType.LEFT_DRAG];
+      ssc.translateEventTypes = [Cesium.CameraEventType.RIGHT_DRAG];
+      ssc.tiltEventTypes = [Cesium.CameraEventType.MIDDLE_DRAG, Cesium.CameraEventType.PINCH];
+      ssc.lookEventTypes = [Cesium.CameraEventType.RIGHT_DRAG];
+      ssc.zoomEventTypes = [Cesium.CameraEventType.WHEEL, Cesium.CameraEventType.PINCH];
+      try{ ssc.minimumZoomDistance = 1; }catch(_){ }
+      try{ ssc.maximumZoomDistance = 100000; }catch(_){ }
+    }catch(_){ }
+    requestSceneRenderBurst(3);
+  }
+
   function setPanoramaMouseBindings(){
+    try{ hvExteriorOrbitController.disable(); }catch(_){ }
     viewer.scene.camera.constrainedAxis = undefined;
     ssc.enableInputs = false;
     ssc.enableRotate = false;
@@ -2959,6 +3226,49 @@ async function refreshFutureProjects(bIdx){
     if (Math.abs(cam.roll) > 1e-4) {
       cam.setView({ destination: cam.positionWC, orientation: { heading: cam.heading, pitch: cam.pitch, roll: 0.0 } });
     }
+  }
+
+
+  // v42: no snap-back ground clamp. Exterior tilt is disabled preventively in setExteriorMouseBindings().
+  // Keep this function as a compatibility no-op so older call sites do not crash.
+  function hvClampCameraAboveBuildingSurface(){
+    return;
+  }
+
+  let hvExteriorOrbitState = null;
+  function hvRememberExteriorOrbit(center, heading, pitch, distance){
+    try{
+      hvExteriorOrbitState = {
+        center: Cesium.Cartesian3.clone(center),
+        heading: Number(heading) || 0,
+        pitch: Number(pitch) || Cesium.Math.toRadians(-28),
+        distance: Math.max(1, Number(distance) || 120)
+      };
+      try{
+        if(typeof hvExteriorOrbitController !== 'undefined'){
+          hvExteriorOrbitController.setState(hvExteriorOrbitState.center, hvExteriorOrbitState.heading, hvExteriorOrbitState.pitch, hvExteriorOrbitState.distance, {
+            minDistance: IS_MOBILE ? 20 : 8,
+            maxDistance: Math.max(6000, hvExteriorOrbitState.distance * 8)
+          });
+        }
+      }catch(_){ }
+    }catch(_){ }
+  }
+  function hvRestoreExteriorOrbitIfNeeded(reason){
+    try{
+      if(currentMode !== 'exterior' || !hvExteriorOrbitState) return false;
+      const st = hvExteriorOrbitState;
+      const safePitch = Math.max(Cesium.Math.toRadians(-58), Math.min(Cesium.Math.toRadians(-12), st.pitch));
+      const safeRange = Math.max(IS_MOBILE ? 20 : 8, st.distance);
+      const orbitFrame = Cesium.Transforms.eastNorthUpToFixedFrame(st.center);
+      const offset = new Cesium.HeadingPitchRange(st.heading, safePitch, safeRange);
+      viewer.scene.camera.lookAtTransform(orbitFrame, offset);
+      try{ hvExteriorOrbitController.setState(st.center, st.heading, safePitch, safeRange); }catch(_){ }
+      setExteriorMouseBindings();
+      try{ viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }catch(_){ }
+      requestSceneRenderBurst(3);
+      return true;
+    }catch(_){ return false; }
   }
 
   const panoramaDragController = (function(){
@@ -3179,7 +3489,7 @@ async function refreshFutureProjects(bIdx){
   displayOptionsWrap.innerHTML = `
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showJoystickToggle" type="checkbox"> Show camera joystick</label>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showMinimapToggle" type="checkbox" checked> Show minimap</label>
-    <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="autoHideUIToggle" type="checkbox" checked> Auto-hide UI when idle</label>
+    <label style="display:none;align-items:center;gap:8px;cursor:pointer"><input id="autoHideUIToggle" type="checkbox"> Auto-hide UI when idle</label>
     <button id="presentationModeBtn" class="ui-btn" style="width:100%;border-radius:8px;padding:8px;cursor:pointer;font-weight:700">Presentation Mode</button>`;
   gfxCard.appendChild(displayOptionsWrap);
   const showJoystickToggle = displayOptionsWrap.querySelector('#showJoystickToggle');
@@ -3187,7 +3497,9 @@ async function refreshFutureProjects(bIdx){
   const autoHideUIToggle = displayOptionsWrap.querySelector('#autoHideUIToggle');
   const presentationModeBtn = displayOptionsWrap.querySelector('#presentationModeBtn');
   showJoystickToggle.checked = cameraJoystickEnabledByUser;
-  autoHideUIToggle.checked = autoHideUIEnabled;
+  showMinimapToggle.checked = minimapEnabledByUser;
+  autoHideUIToggle.checked = false;
+  autoHideUIToggle.disabled = true;
   const editorAuthWrap = document.createElement('div');
   editorAuthWrap.style.cssText = "margin-top:12px;padding-top:12px;border-top:1px solid rgba(0,0,0,.08);display:flex;flex-direction:column;gap:8px";
   editorAuthWrap.innerHTML = `
@@ -3290,7 +3602,7 @@ async function refreshFutureProjects(bIdx){
       // While setting Start/End in Building View, unlock the camera like interior mode
       // so admins can frame exact camera positions and angles.
       stopCameraTracking();
-      setInteriorMouseBindings();
+      setCinematicSetupMouseBindings();
       interiorNav.enable();
       setJoystickVisible(true);
     }catch(_){ }
@@ -3921,7 +4233,8 @@ async function refreshFutureProjects(bIdx){
     uiAutoHideTimer = setTimeout(function(){ setUiAutoHidden(true); }, 5000);
   }
   autoHideUIToggle.addEventListener('change', function(){
-    autoHideUIEnabled = !!autoHideUIToggle.checked;
+    autoHideUIEnabled = false;
+    autoHideUIToggle.checked = false;
     markUiActive();
   });
   ['pointermove','mousedown','keydown','touchstart','wheel'].forEach(function(ev){
@@ -4900,7 +5213,7 @@ async function refreshFutureProjects(bIdx){
             material: Cesium.Color.WHITE.withAlpha(0.88),
             clampToGround: false
           },
-          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvPoiLeaderLine:true },
+          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvPoiLeaderLine:true, hvNoCameraFocus:true },
           show: i===0
         });
 
@@ -4913,7 +5226,7 @@ async function refreshFutureProjects(bIdx){
             outlineWidth: 2,
             disableDepthTestDistance: Number.POSITIVE_INFINITY
           },
-          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvPoiGroundAnchor:true },
+          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvPoiGroundAnchor:true, hvNoCameraFocus:true },
           show: i===0
         });
 
@@ -4930,7 +5243,7 @@ async function refreshFutureProjects(bIdx){
               disableDepthTestDistance: Number.POSITIVE_INFINITY
             };
           })(),
-          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset },
+          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvNoCameraFocus:true },
           show: i===0
         });
         poiIndexById.set(ent.id,{dsIndex:i});
@@ -6579,7 +6892,7 @@ function fmtMoneyNoDash(n){
       const root=document.createElement('div');
       root.id='miniTopRight';
       root.className='ui-card';
-      root.style.cssText="position:fixed;right:16px;top:16px;width:260px;height:260px;border-radius:12px;z-index:2100;overflow:hidden;display:block;background:#fff";
+      root.style.cssText="position:fixed;right:16px;top:16px;width:" + (IS_MOBILE ? "112px" : "260px") + ";height:" + (IS_MOBILE ? "112px" : "260px") + ";border-radius:12px;z-index:2100;overflow:hidden;display:" + ((minimapEnabledByUser && currentMode === 'exterior') ? "block" : "none") + ";background:#fff";
       document.body.appendChild(root);
 
       const stage=document.createElement('div');
@@ -6730,7 +7043,7 @@ function fmtMoneyNoDash(n){
 
       return {
         root,
-        show(){ root.style.display = (minimapEnabledByUser && currentMode === 'exterior') ? 'block' : 'none'; },
+        show(){ root.style.display = (minimapEnabledByUser && currentMode === 'exterior') ? 'block' : 'none'; root.style.width = IS_MOBILE ? '112px' : '260px'; root.style.height = IS_MOBILE ? '112px' : '260px'; try{ setTimeout(function(){ map.invalidateSize(false); }, 40); }catch(_){} },
         hide(){ root.style.display='none'; },
         setMode,
         setPane(pane){ if(pane === 'ai'){ setAiAdvisorOpen(true); return; } setMode('city'); },
@@ -7691,14 +8004,34 @@ if(saveLabelsBtn){
         // the selected/tracked entity or change the Building View camera target.
         try{ viewer.selectedEntity = undefined; }catch(_){ }
         try{ viewer.trackedEntity = undefined; }catch(_){ }
-        try{ stopCameraTracking(); }catch(_){ }
+        try{ hvRestoreExteriorOrbitIfNeeded('poi-click'); }catch(_){ }
         tip.style.display='none';
         requestSceneRenderBurst(2);
         return;
       }
       tip.style.display='none';
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-    viewer.camera.changed.addEventListener(()=>{ tip.style.display='none'; });
+
+    handler.setInputAction(function(){
+      try{ hvRestoreExteriorOrbitIfNeeded('handler-left-double-click'); }catch(_){ }
+      try{ viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }catch(_){ }
+      tip.style.display='none';
+    }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+
+
+    // Prevent Cesium default selection from stealing camera focus after a POI tap/click.
+    try{
+      viewer.selectedEntityChanged.addEventListener(function(ent){
+        try{
+          if(ent && ent.id && poiIndexById.has(ent.id)){
+            viewer.selectedEntity = undefined;
+            viewer.trackedEntity = undefined;
+            hvRestoreExteriorOrbitIfNeeded('poi-selected-entity');
+            requestSceneRenderBurst(2);
+          }
+        }catch(_){ }
+      });
+    }catch(_){ }
 
     function refreshPoisForSelection(){
       const idx=Number(selectBox.value);
@@ -7966,7 +8299,10 @@ function hideUnitMetaUI(){
       const selectedIsPanorama = !isExterior && selectedKind==='panorama' && !!selectedMeta;
       setInteriorEntryButtonsVisibility(idx, isExterior);
       hideUnitAdLogo();
-      if(SHOULD_COLLAPSE_CONTROLS_ON_INTERIOR){
+      if(IS_MOBILE){
+        // Mobile-first: keep Controls collapsed so the 3D view is not covered on first impression.
+        setCollapsed(true);
+      } else if(SHOULD_COLLAPSE_CONTROLS_ON_INTERIOR){
         setCollapsed(!isExterior);
       } else {
         setCollapsed(false);
@@ -8094,7 +8430,9 @@ function hideUnitMetaUI(){
           const sphereRadius = Math.max(12, Math.max(scale || 0, height || 0));
           const duration = currentMode === 'exterior' ? (IS_MOBILE ? 0.7 : 1.0) : (IS_MOBILE ? 0.9 : 1.2);
           const orbitFrame = Cesium.Transforms.eastNorthUpToFixedFrame(center);
-          const orbitOffset = new Cesium.HeadingPitchRange(heading, pitch, distance);
+          const safeExteriorPitch = Math.max(Cesium.Math.toRadians(-58), Math.min(Cesium.Math.toRadians(-12), pitch));
+          const orbitOffset = new Cesium.HeadingPitchRange(heading, safeExteriorPitch, distance);
+          hvRememberExteriorOrbit(center, heading, safeExteriorPitch, distance);
           function lockExteriorOrbitCamera(){
             try{
               // Keep Building View in a local ENU frame so left-drag rotates around the selected building,
@@ -8504,6 +8842,8 @@ function hideUnitMetaUI(){
       hvGuideBubble.style.transform = 'none';
     }
     function hvRunGuide(kind, steps){
+      // UX polish: first-run tutorial is disabled. HomeView should be self-explanatory, not interrupt users.
+      return;
       if(hvGuideActive || !steps || !steps.length) return;
       if(hvSafeLocalGet(hvOnboardingSeenKey(kind))) return;
       hvGuideActive = true;
@@ -8549,12 +8889,13 @@ function hideUnitMetaUI(){
       }catch(err){ console.warn('HomeView guide failed:', err); }
     }
     function hvScheduleContextGuide(delay){
-      setTimeout(hvMaybeRunContextGuide, Number(delay || 550));
+      // First-run guide disabled by request. Keep function for compatibility.
+      return;
     }
 
 
     // init
-    setCollapsed(false);
+    setCollapsed(IS_MOBILE);
     setLaunchLoadingText('Opening HomeView...');
     const usedSharedTarget = applyInitialShareLinkFromUrl();
     if(!usedSharedTarget){
