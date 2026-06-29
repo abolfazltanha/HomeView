@@ -2937,23 +2937,29 @@ async function refreshFutureProjects(bIdx){
   unitAdLink.rel = 'noopener noreferrer';
   const unitAdImg = document.createElement('img');
   unitAdImg.alt = 'Interior design partner';
-  unitAdImg.referrerPolicy = 'no-referrer';
+  // v67: keep mobile logo loading as close to desktop as possible.
+  // Some hosts reject no-referrer requests on mobile Safari/Chrome, so use a softer policy.
+  unitAdImg.referrerPolicy = 'origin-when-cross-origin';
   unitAdImg.decoding = 'async';
   unitAdImg.loading = 'eager';
   unitAdImg.addEventListener('error', function(){
     try{
-      // v65: on mobile some hosted image URLs render as a broken/question-mark image.
-      // Do not remove the external-link placement; show a clean link fallback instead.
-      unitAdImg.style.display = 'none';
-      unitAdLink.style.lineHeight = '1';
-      if(!unitAdLink.querySelector('.hv-ad-fallback')){
-        const fb = document.createElement('span');
-        fb.className = 'hv-ad-fallback';
-        fb.textContent = '↗';
-        fb.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:999px;background:#fff;color:#111;font-weight:900;font-size:20px;box-shadow:0 4px 12px rgba(0,0,0,.16)';
-        unitAdLink.appendChild(fb);
+      // v67: do not replace the logo with the old arrow fallback on mobile.
+      // First retry the exact original URL from the sheet. Some hosts work in <img>
+      // only with their original URL and fail after normalization on mobile.
+      const raw = unitAdImg.getAttribute('data-original-src') || '';
+      const current = unitAdImg.getAttribute('src') || '';
+      if(raw && raw !== current && !unitAdImg.__hvRetriedRawLogo){
+        unitAdImg.__hvRetriedRawLogo = true;
+        unitAdImg.style.display = 'block';
+        unitAdLink.style.lineHeight = '0';
+        unitAdImg.src = raw;
+        return;
       }
-      unitAdWrap.style.display = unitAdLink.getAttribute('href') ? 'flex' : 'none';
+      // If it still fails, keep the logo space hidden rather than showing the ugly arrow.
+      unitAdImg.style.display = 'none';
+      unitAdLink.style.lineHeight = '0';
+      unitAdWrap.style.display = 'none';
     }catch(_){}
   });
   unitAdImg.style.cssText = 'display:block;max-width:min(30vw,160px);max-height:72px;width:auto;height:auto;object-fit:contain;border-radius:8px';
@@ -3038,6 +3044,8 @@ async function refreshFutureProjects(bIdx){
       return;
     }
     try{ const fb = unitAdLink.querySelector('.hv-ad-fallback'); if(fb) fb.remove(); }catch(_){ }
+    unitAdImg.__hvRetriedRawLogo = false;
+    unitAdImg.setAttribute('data-original-src', String(cfg.logoUrl || '').trim());
     unitAdImg.style.display = 'block';
     unitAdLink.style.lineHeight = '0';
     unitAdImg.src = hvNormalizeImageAssetUrl(cfg.logoUrl);
@@ -3207,6 +3215,9 @@ async function refreshFutureProjects(bIdx){
     let heading = 0;
     let pitch = Cesium.Math.toRadians(-28);
     let distance = 120;
+    let pinchActive = false;
+    let pinchStartDistance = 0;
+    let pinchStartRange = 120;
     const MIN_PITCH = Cesium.Math.toRadians(-72); // steep enough to view the roof, never under terrain
     const MAX_PITCH = Cesium.Math.toRadians(-12); // prevents flipping upward/through the ground
     const headingPerPixel = 0.0042;
@@ -3237,10 +3248,25 @@ async function refreshFutureProjects(bIdx){
         }
       }catch(_){ }
     }
+    function clampDistance(v){
+      const raw = Number(v);
+      if(!Number.isFinite(raw)) return Math.max(8, distance || 120);
+      return Math.max(18, Math.min(2500, raw));
+    }
+    function getTouchDistance(touches){
+      try{
+        if(!touches || touches.length < 2) return 0;
+        const a = touches[0], b = touches[1];
+        const dx = (a.clientX || 0) - (b.clientX || 0);
+        const dy = (a.clientY || 0) - (b.clientY || 0);
+        return Math.sqrt(dx * dx + dy * dy);
+      }catch(_){ return 0; }
+    }
     function apply(){
       if(!shouldRun()) return;
       try{
-        viewer.camera.lookAtTransform(orbitFrame, new Cesium.HeadingPitchRange(heading, clampPitch(pitch), Math.max(8, distance)));
+        distance = clampDistance(distance);
+        viewer.camera.lookAtTransform(orbitFrame, new Cesium.HeadingPitchRange(heading, clampPitch(pitch), distance));
         requestSceneRender();
       }catch(_){ }
     }
@@ -3249,12 +3275,14 @@ async function refreshFutureProjects(bIdx){
       orbitCenter = center ? Cesium.Cartesian3.clone(center, new Cesium.Cartesian3()) : null;
       heading = Number.isFinite(initialHeading) ? initialHeading : heading;
       pitch = clampPitch(initialPitch);
-      distance = Math.max(8, Number(initialDistance) || distance || 120);
+      distance = clampDistance(Number(initialDistance) || distance || 120);
       if(enabled && currentMode === 'exterior' && !isCinematicFreeCamera()) apply();
     }
 
     el.addEventListener('pointerdown', function(evt){
       if(!shouldRun()) return;
+      // Let the custom touchstart/touchmove pinch handler own two-finger zoom on mobile.
+      if(evt.pointerType === 'touch' && pinchActive) return;
       if(evt.button !== undefined && evt.button !== 0) return;
       if(evt.pointerType === 'touch' && !evt.isPrimary) return;
       pointerId = evt.pointerId;
@@ -3304,15 +3332,52 @@ async function refreshFutureProjects(bIdx){
     el.addEventListener('pointercancel', end, { passive:false });
     el.addEventListener('lostpointercapture', function(){ dragging = false; pointerId = null; }, { passive:true });
 
-    // Keep native wheel/pinch zoom, but refresh our stored range before the next safe orbit drag.
+    // Keep native wheel zoom on desktop, but refresh our stored range before the next safe orbit drag.
     el.addEventListener('wheel', function(){
       if(!shouldRun()) return;
       setTimeout(syncFromCamera, 0);
     }, { passive:true });
 
+    // v67: Cesium's native PINCH zoom can be swallowed by the safe exterior orbit
+    // controller on mobile. Implement a small, explicit two-finger pinch zoom only
+    // for Building View. Panorama, 3D interior and Cinematic Camera remain untouched.
+    el.addEventListener('touchstart', function(evt){
+      if(!shouldRun()) return;
+      if(!evt.touches || evt.touches.length !== 2) return;
+      pinchActive = true;
+      dragging = false;
+      pointerId = null;
+      syncFromCamera();
+      pinchStartDistance = getTouchDistance(evt.touches);
+      pinchStartRange = clampDistance(distance);
+      try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){ }
+    }, { passive:false });
+
+    el.addEventListener('touchmove', function(evt){
+      if(!shouldRun() || !pinchActive) return;
+      if(!evt.touches || evt.touches.length !== 2) return;
+      const d = getTouchDistance(evt.touches);
+      if(d > 4 && pinchStartDistance > 4){
+        distance = clampDistance(pinchStartRange * (pinchStartDistance / d));
+        apply();
+      }
+      try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){ }
+    }, { passive:false });
+
+    function endPinch(){
+      pinchActive = false;
+      pinchStartDistance = 0;
+      pinchStartRange = clampDistance(distance);
+    }
+    el.addEventListener('touchend', function(evt){
+      if(!pinchActive) return;
+      if(!evt.touches || evt.touches.length < 2) endPinch();
+    }, { passive:false });
+    el.addEventListener('touchcancel', function(){ endPinch(); }, { passive:false });
+
     return {
       enable(){ enabled = true; dragging = false; },
-      disable(){ enabled = false; dragging = false; pointerId = null; },
+      disable(){ enabled = false; dragging = false; pointerId = null; pinchActive = false; },
       setOrbit:setOrbit,
       isDragging(){ return dragging; }
     };
