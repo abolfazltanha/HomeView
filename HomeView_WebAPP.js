@@ -47,42 +47,6 @@ forceLightCSS.textContent = `
 `;
 document.head.appendChild(forceLightCSS);
 
-
-// ===== HomeView mobile UX polish =====
-// Keeps the first mobile view clean: compact controls, compact/hidden minimap, no auto-hide surprises.
-const hvMobilePolishCSS = document.createElement('style');
-hvMobilePolishCSS.textContent = `
-  @media (max-width: 640px), (pointer: coarse) {
-    #chartContainer {
-      left: 10px !important;
-      top: 10px !important;
-      width: min(82vw, 300px) !important;
-      max-height: 46vh !important;
-      padding: 10px !important;
-      border-radius: 14px !important;
-      font-size: 13px !important;
-    }
-    #chartContainer select,
-    #chartContainer input,
-    #chartContainer button {
-      min-height: 34px !important;
-      font-size: 12px !important;
-    }
-    #miniTopRight {
-      width: 112px !important;
-      height: 112px !important;
-      right: 10px !important;
-      top: 10px !important;
-      border-radius: 12px !important;
-    }
-    #compass {
-      transform: scale(.82);
-      transform-origin: top right;
-    }
-  }
-`;
-document.head.appendChild(hvMobilePolishCSS);
-
 Promise.all([
   new Promise(r=>chartScript.onload=r),
   new Promise(r=>papaScript.onload=r),
@@ -173,8 +137,8 @@ Promise.all([
   const DEFAULT_INTERIOR_FOV_DEG = 100;
   let currentModelQualityPreset = 'standard';
   let cameraJoystickEnabledByUser = true;
-  let minimapEnabledByUser = !IS_MOBILE;
-  let autoHideUIEnabled = false; // UX polish: never hide controls automatically, especially on mobile.
+  let minimapEnabledByUser = true;
+  let autoHideUIEnabled = false; // HomeView v56: auto-hide removed completely.
   var navigationLabelsEnabled = true;
   var infoLabelsEnabled = false;
   let uiAutoHidden = false;
@@ -281,37 +245,6 @@ Promise.all([
   try{ viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK); }catch(_){ }
   try{ viewer.screenSpaceEventHandler && viewer.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK); }catch(_){ }
 
-  // v42: hard-block double-click / double-tap camera focus stealing.
-  // Cesium can re-bind handlers internally and mobile browsers may emit dblclick-style gestures.
-  // We swallow those events at the canvas capture layer so a terrain double-click can never free
-  // HomeView's building orbit or change the camera target.
-  function hvBlockDefaultDoubleClickFocus(){
-    try{
-      const canvas = viewer && viewer.scene && viewer.scene.canvas;
-      if(!canvas || canvas.__hvDoubleClickBlocked) return;
-      canvas.__hvDoubleClickBlocked = true;
-      ['dblclick'].forEach(function(type){
-        canvas.addEventListener(type, function(evt){
-          try{ evt.preventDefault(); evt.stopPropagation(); if(evt.stopImmediatePropagation) evt.stopImmediatePropagation(); }catch(_){ }
-          try{ hvRestoreExteriorOrbitIfNeeded('dblclick'); }catch(_){ }
-          return false;
-        }, true);
-      });
-      try{
-        viewer.cesiumWidget.screenSpaceEventHandler.setInputAction(function(){
-          try{ hvRestoreExteriorOrbitIfNeeded('cesium-left-double-click'); }catch(_){ }
-        }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
-      }catch(_){ }
-      try{
-        if(viewer.screenSpaceEventHandler){
-          viewer.screenSpaceEventHandler.setInputAction(function(){
-            try{ hvRestoreExteriorOrbitIfNeeded('viewer-left-double-click'); }catch(_){ }
-          }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
-        }
-      }catch(_){ }
-    }catch(_){ }
-  }
-
   // current view mode (needed for FOV slider)
   let currentMode = 'exterior';
   // Room model state is declared early because camera-framing helpers may run before the room loader block initializes.
@@ -369,7 +302,7 @@ Promise.all([
   // ===== Room-to-Room 3D Loading =====
   // v44 manual camera pose: label picking follows the active room model, not only the original unit model.
   // Recommended Sheet format per unit:
-  // room_model_items = "key|Label|model_url|model_heading|camera_x,camera_y,camera_z|camera_heading; bedroom|Bedroom|https://.../bedroom.glb|90|0,-1.8,1.6|180"
+  // room_model_items = "key|Label|model_url|model_heading|camera_x,camera_y,camera_z|camera_heading|audio_url; bedroom|Bedroom|https://.../bedroom.glb|90|0,-1.8,1.6|180|https://.../bedroom.mp3"
   // Clickable 3D labels can use actionType=open_room_model and actionValue=room key.
   function hvSlugifyRoomKey(s){
     return String(s || '').trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'') || 'room';
@@ -393,7 +326,7 @@ Promise.all([
       const s = String(chunk || '').trim();
       if(!s) return;
       const parts = s.split('|').map(function(x){ return String(x || '').trim(); });
-      let key='', label='', url='', modelHeading='', cameraXyz='', cameraHeading='';
+      let key='', label='', url='', modelHeading='', cameraXyz='', cameraHeading='', audioUrl='';
       if(parts.length >= 3){
         if(isLikelyModelUrl(parts[1])){
           // Compact format: Label|URL|model_heading|camera_x,camera_y,camera_z|camera_heading
@@ -403,6 +336,7 @@ Promise.all([
           modelHeading = parts[2] || '';
           cameraXyz = parts[3] || '';
           cameraHeading = parts[4] || '';
+          audioUrl = parts[5] || '';
         }else{
           // Recommended format: key|Label|URL|model_heading|camera_x,camera_y,camera_z|camera_heading
           key = hvSlugifyRoomKey(parts[0]);
@@ -411,6 +345,7 @@ Promise.all([
           modelHeading = parts[3] || '';
           cameraXyz = parts[4] || '';
           cameraHeading = parts[5] || '';
+          audioUrl = parts[6] || '';
         }
       }else if(parts.length >= 2){
         label = parts[0] || 'Room';
@@ -419,6 +354,7 @@ Promise.all([
         modelHeading = parts[2] || '';
         cameraXyz = parts[3] || '';
         cameraHeading = parts[4] || '';
+        audioUrl = parts[5] || '';
       }
       if(!key) key = hvSlugifyRoomKey(label);
       if(label && isLikelyModelUrl(url)) items.push({
@@ -431,7 +367,9 @@ Promise.all([
         cameraXyz:cameraXyz,
         camera_xyz:cameraXyz,
         cameraHeading:cameraHeading,
-        camera_heading:cameraHeading
+        camera_heading:cameraHeading,
+        audioUrl:audioUrl,
+        audio_url:audioUrl
       });
     });
     return items;
@@ -2471,7 +2409,7 @@ function hvUpdateMarkerSheetOutputWithCamera(){
   function enterMarkerEditorCameraMode(){
     try{
       stopCameraTracking();
-      setCinematicSetupMouseBindings();
+      setInteriorMouseBindings();
       interiorNav.enable();
       setJoystickVisible(true);
       setCameraCollision(false);
@@ -2914,6 +2852,10 @@ async function refreshFutureProjects(bIdx){
   unitAdLink.rel = 'noopener noreferrer';
   const unitAdImg = document.createElement('img');
   unitAdImg.alt = 'Interior design partner';
+  unitAdImg.referrerPolicy = 'no-referrer';
+  unitAdImg.decoding = 'async';
+  unitAdImg.loading = 'eager';
+  unitAdImg.addEventListener('error', function(){ try{ unitAdWrap.style.display = 'none'; }catch(_){} });
   unitAdImg.style.cssText = 'display:block;max-width:min(30vw,160px);max-height:72px;width:auto;height:auto;object-fit:contain;border-radius:8px';
   unitAdLink.appendChild(unitAdImg);
   unitAdWrap.appendChild(unitAdLink);
@@ -2924,6 +2866,33 @@ async function refreshFutureProjects(bIdx){
     if(!raw) return '';
     if(/^https?:\/\//i.test(raw) || /^mailto:/i.test(raw) || /^tel:/i.test(raw)) return raw;
     return 'https://' + raw.replace(/^\/+/, '');
+  }
+
+  function hvNormalizeImageAssetUrl(url){
+    let raw = String(url || '').trim();
+    if(!raw) return '';
+    try{ raw = raw.replace(/&amp;/g, '&'); }catch(_){ }
+    try{
+      // Google Drive share links often show as a broken/question-mark image on mobile Safari.
+      // Convert common share formats into a direct thumbnail URL.
+      let m = raw.match(/drive\.google\.com\/file\/d\/([^/]+)/i);
+      if(m && m[1]) return 'https://drive.google.com/thumbnail?id=' + encodeURIComponent(m[1]) + '&sz=w1000';
+      m = raw.match(/[?&]id=([^&]+)/i);
+      if(/drive\.google\.com/i.test(raw) && m && m[1]) return 'https://drive.google.com/thumbnail?id=' + encodeURIComponent(m[1]) + '&sz=w1000';
+
+      // Dropbox share links need raw=1 for direct image rendering.
+      if(/dropbox\.com/i.test(raw)){
+        const u = new URL(raw);
+        u.searchParams.delete('dl');
+        u.searchParams.set('raw', '1');
+        return u.href;
+      }
+
+      // GitHub blob links should be raw links for <img>.
+      m = raw.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/i);
+      if(m) return 'https://raw.githubusercontent.com/' + m[1] + '/' + m[2] + '/' + m[3] + '/' + m[4];
+    }catch(_){ }
+    try{ return encodeURI(raw); }catch(_){ return raw; }
   }
   function hideUnitAdLogo(){
     unitAdWrap.style.display = 'none';
@@ -2966,7 +2935,7 @@ async function refreshFutureProjects(bIdx){
       hideUnitAdLogo();
       return;
     }
-    unitAdImg.src = cfg.logoUrl;
+    unitAdImg.src = hvNormalizeImageAssetUrl(cfg.logoUrl);
     if(cfg.linkUrl){
       unitAdLink.href = cfg.linkUrl;
       unitAdLink.target = '_blank';
@@ -2983,193 +2952,36 @@ async function refreshFutureProjects(bIdx){
 
   // ===== Mouse bindings =====
   const ssc = viewer.scene.screenSpaceCameraController;
-
-
-  // ===== v43 Exterior Orbit Controller =====
-  // Building View must behave like a product viewer around the selected building, not like a free Cesium camera.
-  // Cesium's native double-click / terrain focus / tilt paths can break the orbit frame and let the camera go
-  // below Google 3D Tiles. This controller owns exterior drag + zoom + limited vertical orbit.
-  const hvExteriorOrbitController = (function(){
-    let enabled = false;
-    let installed = false;
-    let dragging = false;
-    let lastX = 0;
-    let lastY = 0;
-    let lastPinchDistance = 0;
-    const pointers = new Map();
-    const canvas = viewer.scene.canvas;
-    const state = {
-      center: null,
-      heading: 0,
-      pitch: Cesium.Math.toRadians(-28),
-      distance: 120,
-      minDistance: IS_MOBILE ? 20 : 8,
-      maxDistance: 6000
-    };
-
-    function clampDistance(d){
-      const minD = Math.max(IS_MOBILE ? 20 : 8, Number(state.minDistance) || 8);
-      const maxD = Math.max(minD + 1, Number(state.maxDistance) || 6000);
-      return Math.max(minD, Math.min(maxD, Number(d) || minD));
-    }
-    function clampPitch(p){
-      // Keep a normal above-ground building-view angle. Users can orbit up/down,
-      // but never tilt through the terrain. Negative pitch looks down at the building.
-      const lo = Cesium.Math.toRadians(-68);
-      const hi = Cesium.Math.toRadians(-10);
-      const v = Number(p);
-      return Math.max(lo, Math.min(hi, Number.isFinite(v) ? v : Cesium.Math.toRadians(-28)));
-    }
-    function getPinchDistance(){
-      const vals = Array.from(pointers.values());
-      if(vals.length < 2) return 0;
-      const dx = vals[0].x - vals[1].x;
-      const dy = vals[0].y - vals[1].y;
-      return Math.sqrt(dx*dx + dy*dy);
-    }
-    function apply(){
-      if(!enabled || !state.center) return;
-      try{
-        const frame = Cesium.Transforms.eastNorthUpToFixedFrame(state.center);
-        const offset = new Cesium.HeadingPitchRange(
-          state.heading,
-          clampPitch(state.pitch),
-          clampDistance(state.distance)
-        );
-        viewer.scene.camera.lookAtTransform(frame, offset);
-        try{ viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }catch(_){ }
-        requestSceneRenderBurst(2);
-      }catch(_){ }
-    }
-    function setState(center, heading, pitch, distance, options){
-      try{
-        if(center) state.center = Cesium.Cartesian3.clone(center);
-        if(Number.isFinite(Number(heading))) state.heading = Number(heading);
-        state.pitch = clampPitch(pitch);
-        state.distance = clampDistance(distance);
-        if(options && Number.isFinite(Number(options.minDistance))) state.minDistance = Math.max(1, Number(options.minDistance));
-        if(options && Number.isFinite(Number(options.maxDistance))) state.maxDistance = Math.max(state.minDistance + 1, Number(options.maxDistance));
-        apply();
-      }catch(_){ }
-    }
-    function onPointerDown(evt){
-      if(!enabled) return;
-      try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){ }
-      pointers.set(evt.pointerId, { x:evt.clientX, y:evt.clientY });
-      if(pointers.size === 1){
-        dragging = true;
-        lastX = evt.clientX;
-        lastY = evt.clientY;
-      }else if(pointers.size === 2){
-        dragging = false;
-        lastPinchDistance = getPinchDistance();
-      }
-      try{ canvas.setPointerCapture && canvas.setPointerCapture(evt.pointerId); }catch(_){ }
-    }
-    function onPointerMove(evt){
-      if(!enabled || !pointers.has(evt.pointerId)) return;
-      try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){ }
-      pointers.set(evt.pointerId, { x:evt.clientX, y:evt.clientY });
-      if(pointers.size >= 2){
-        const d = getPinchDistance();
-        if(d > 2 && lastPinchDistance > 2){
-          // Fingers move apart => zoom in; fingers move together => zoom out.
-          state.distance = clampDistance(state.distance * (lastPinchDistance / d));
-          apply();
-        }
-        lastPinchDistance = d;
-        return;
-      }
-      if(dragging){
-        const dx = evt.clientX - lastX;
-        const dy = evt.clientY - lastY;
-        lastX = evt.clientX;
-        lastY = evt.clientY;
-        state.heading -= dx * (IS_MOBILE ? 0.0075 : 0.0055);
-        // Vertical drag gives a controlled up/down orbit, but pitch is clamped
-        // before the camera is applied, so there is no underground jump.
-        state.pitch = clampPitch(state.pitch - dy * (IS_MOBILE ? 0.0048 : 0.0036));
-        apply();
-      }
-    }
-    function onPointerUp(evt){
-      if(!enabled) return;
-      pointers.delete(evt.pointerId);
-      try{ canvas.releasePointerCapture && canvas.releasePointerCapture(evt.pointerId); }catch(_){ }
-      if(pointers.size === 0){ dragging = false; lastPinchDistance = 0; }
-      else if(pointers.size === 1){
-        const v = Array.from(pointers.values())[0];
-        dragging = true; lastX = v.x; lastY = v.y;
-      }else if(pointers.size === 2){
-        lastPinchDistance = getPinchDistance();
-      }
-    }
-    function onWheel(evt){
-      if(!enabled) return;
-      try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){ }
-      const dy = Number(evt.deltaY) || 0;
-      const factor = Math.exp(dy * 0.0012);
-      state.distance = clampDistance(state.distance * factor);
-      apply();
-    }
-    function swallow(evt){
-      if(!enabled) return;
-      try{ evt.preventDefault(); evt.stopPropagation(); if(evt.stopImmediatePropagation) evt.stopImmediatePropagation(); }catch(_){ }
-      apply();
-      return false;
-    }
-    function install(){
-      if(installed || !canvas) return;
-      installed = true;
-      canvas.addEventListener('pointerdown', onPointerDown, true);
-      canvas.addEventListener('pointermove', onPointerMove, true);
-      canvas.addEventListener('pointerup', onPointerUp, true);
-      canvas.addEventListener('pointercancel', onPointerUp, true);
-      canvas.addEventListener('wheel', onWheel, { capture:true, passive:false });
-      canvas.addEventListener('dblclick', swallow, true);
-      canvas.addEventListener('contextmenu', swallow, true);
-    }
-    function enable(){
-      install();
-      enabled = true;
-      dragging = false;
-      pointers.clear();
-      lastPinchDistance = 0;
-      try{ canvas.style.touchAction = 'none'; }catch(_){ }
-      // Native Cesium inputs stay OFF in Building View. Our controller handles only safe orbit + zoom.
-      try{
-        ssc.enableInputs = false;
-        ssc.enableRotate = false;
-        ssc.enableTranslate = false;
-        ssc.enableTilt = false;
-        ssc.enableLook = false;
-        ssc.enableZoom = false;
-      }catch(_){ }
-      apply();
-    }
-    function disable(){
-      enabled = false;
-      dragging = false;
-      pointers.clear();
-      lastPinchDistance = 0;
-      try{ canvas.style.touchAction = ''; }catch(_){ }
-    }
-    return { enable:enable, disable:disable, setState:setState, apply:apply, isEnabled:function(){ return enabled; } };
-  })();
   function setExteriorMouseBindings(){
     panoramaDragController.disable();
-    viewer.scene.camera.constrainedAxis = Cesium.Cartesian3.UNIT_Z;
-    try{ setCameraCollision(true); }catch(_){ }
+    try{ exteriorOrbitController && exteriorOrbitController.enable(); }catch(_){ }
 
-    // v44: public Building View uses HomeView's safe orbit controller.
-    // It supports horizontal orbit, limited vertical orbit and zoom, but it never allows
-    // terrain double-click focus or underground tilt.
-    try{ hvExteriorOrbitController.enable(); }catch(_){ }
-    try{ hvBlockDefaultDoubleClickFocus(); }catch(_){ }
+    // v58 Building View safety:
+    // Native Cesium left-drag can still pitch through the terrain in a local orbit frame.
+    // So Building View uses HomeView's own safe orbit drag with a hard pitch range.
+    // Interior, Panorama, and Cinematic Camera remain free and are not clamped.
+    viewer.scene.camera.constrainedAxis = Cesium.Cartesian3.UNIT_Z;
+    setCameraCollision(true);
+    ssc.enableInputs = true;
+    ssc.enableRotate = false;
+    ssc.enableTranslate = false;
+    ssc.enableTilt = false;
+    ssc.enableLook = false;
+    ssc.enableZoom = true;
+    ssc.rotateEventTypes = [];
+    ssc.translateEventTypes = [];
+    ssc.tiltEventTypes = [];
+    ssc.lookEventTypes = [];
+    try{
+      ssc.zoomEventTypes = [
+        Cesium.CameraEventType.WHEEL,
+        Cesium.CameraEventType.PINCH
+      ];
+    }catch(_){ }
   }
   function setInteriorMouseBindings(){
-    try{ hvExteriorOrbitController.disable(); }catch(_){ }
     panoramaDragController.disable();
+    try{ exteriorOrbitController && exteriorOrbitController.disable(); }catch(_){ }
     viewer.scene.camera.constrainedAxis = undefined;
     ssc.enableInputs = true;
     ssc.enableRotate=false; ssc.enableTranslate=false; ssc.enableTilt=false;
@@ -3177,36 +2989,8 @@ async function refreshFutureProjects(bIdx){
     ssc.lookEventTypes=[Cesium.CameraEventType.LEFT_DRAG];
     ssc.rotateEventTypes=[]; ssc.translateEventTypes=[]; ssc.tiltEventTypes=[];
   }
-
-  function setCinematicSetupMouseBindings(){
-    // Admin-only setup mode: restore native camera controls so Start/End waypoints
-    // can be framed quickly. This mode is only active while the Cinematic Camera
-    // panel is open, so public users still get the safe HomeView orbit controller.
-    try{ hvExteriorOrbitController.disable(); }catch(_){ }
-    try{ panoramaDragController.disable(); }catch(_){ }
-    try{ viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); }catch(_){ }
-    viewer.scene.camera.constrainedAxis = undefined;
-    try{ setCameraCollision(true); }catch(_){ }
-    try{
-      ssc.enableInputs = true;
-      ssc.enableRotate = true;
-      ssc.enableTranslate = true;
-      ssc.enableTilt = true;
-      ssc.enableLook = true;
-      ssc.enableZoom = true;
-      ssc.rotateEventTypes = [Cesium.CameraEventType.LEFT_DRAG];
-      ssc.translateEventTypes = [Cesium.CameraEventType.RIGHT_DRAG];
-      ssc.tiltEventTypes = [Cesium.CameraEventType.MIDDLE_DRAG, Cesium.CameraEventType.PINCH];
-      ssc.lookEventTypes = [Cesium.CameraEventType.RIGHT_DRAG];
-      ssc.zoomEventTypes = [Cesium.CameraEventType.WHEEL, Cesium.CameraEventType.PINCH];
-      try{ ssc.minimumZoomDistance = 1; }catch(_){ }
-      try{ ssc.maximumZoomDistance = 100000; }catch(_){ }
-    }catch(_){ }
-    requestSceneRenderBurst(3);
-  }
-
   function setPanoramaMouseBindings(){
-    try{ hvExteriorOrbitController.disable(); }catch(_){ }
+    try{ exteriorOrbitController && exteriorOrbitController.disable(); }catch(_){ }
     viewer.scene.camera.constrainedAxis = undefined;
     ssc.enableInputs = false;
     ssc.enableRotate = false;
@@ -3226,49 +3010,6 @@ async function refreshFutureProjects(bIdx){
     if (Math.abs(cam.roll) > 1e-4) {
       cam.setView({ destination: cam.positionWC, orientation: { heading: cam.heading, pitch: cam.pitch, roll: 0.0 } });
     }
-  }
-
-
-  // v42: no snap-back ground clamp. Exterior tilt is disabled preventively in setExteriorMouseBindings().
-  // Keep this function as a compatibility no-op so older call sites do not crash.
-  function hvClampCameraAboveBuildingSurface(){
-    return;
-  }
-
-  let hvExteriorOrbitState = null;
-  function hvRememberExteriorOrbit(center, heading, pitch, distance){
-    try{
-      hvExteriorOrbitState = {
-        center: Cesium.Cartesian3.clone(center),
-        heading: Number(heading) || 0,
-        pitch: Number(pitch) || Cesium.Math.toRadians(-28),
-        distance: Math.max(1, Number(distance) || 120)
-      };
-      try{
-        if(typeof hvExteriorOrbitController !== 'undefined'){
-          hvExteriorOrbitController.setState(hvExteriorOrbitState.center, hvExteriorOrbitState.heading, hvExteriorOrbitState.pitch, hvExteriorOrbitState.distance, {
-            minDistance: IS_MOBILE ? 20 : 8,
-            maxDistance: Math.max(6000, hvExteriorOrbitState.distance * 8)
-          });
-        }
-      }catch(_){ }
-    }catch(_){ }
-  }
-  function hvRestoreExteriorOrbitIfNeeded(reason){
-    try{
-      if(currentMode !== 'exterior' || !hvExteriorOrbitState) return false;
-      const st = hvExteriorOrbitState;
-      const safePitch = Math.max(Cesium.Math.toRadians(-58), Math.min(Cesium.Math.toRadians(-12), st.pitch));
-      const safeRange = Math.max(IS_MOBILE ? 20 : 8, st.distance);
-      const orbitFrame = Cesium.Transforms.eastNorthUpToFixedFrame(st.center);
-      const offset = new Cesium.HeadingPitchRange(st.heading, safePitch, safeRange);
-      viewer.scene.camera.lookAtTransform(orbitFrame, offset);
-      try{ hvExteriorOrbitController.setState(st.center, st.heading, safePitch, safeRange); }catch(_){ }
-      setExteriorMouseBindings();
-      try{ viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }catch(_){ }
-      requestSceneRenderBurst(3);
-      return true;
-    }catch(_){ return false; }
   }
 
   const panoramaDragController = (function(){
@@ -3350,28 +3091,198 @@ async function refreshFutureProjects(bIdx){
       disable(){ enabled = false; end(); }
     };
   })();
+
+  const exteriorOrbitController = (function(){
+    let enabled = false;
+    let dragging = false;
+    let pointerId = null;
+    let lastX = 0, lastY = 0;
+    let orbitFrame = null;
+    let orbitCenter = null;
+    let heading = 0;
+    let pitch = Cesium.Math.toRadians(-28);
+    let distance = 120;
+    const MIN_PITCH = Cesium.Math.toRadians(-72); // steep enough to view the roof, never under terrain
+    const MAX_PITCH = Cesium.Math.toRadians(-12); // prevents flipping upward/through the ground
+    const headingPerPixel = 0.0042;
+    const pitchPerPixel = 0.0024;
+    const MIN_DRAG_PX = 3;
+    const el = viewer.scene.canvas;
+
+    function isCinematicFreeCamera(){
+      return !!(window.__hvCinematicFreeCameraActive || window.__hvCinematicPlaying);
+    }
+    function shouldRun(){
+      return enabled && currentMode === 'exterior' && !isCinematicFreeCamera() && !!orbitFrame;
+    }
+    function clampPitch(v){
+      return Math.max(MIN_PITCH, Math.min(MAX_PITCH, Number(v) || Cesium.Math.toRadians(-28)));
+    }
+    function syncFromCamera(){
+      try{
+        const cam = viewer.camera;
+        heading = Number.isFinite(cam.heading) ? cam.heading : heading;
+        pitch = clampPitch(Number.isFinite(cam.pitch) ? cam.pitch : pitch);
+        if(orbitCenter){
+          const d = Cesium.Cartesian3.distance(cam.positionWC, orbitCenter);
+          if(Number.isFinite(d) && d > 1) distance = d;
+        }else if(cam.position){
+          const d = Cesium.Cartesian3.magnitude(cam.position);
+          if(Number.isFinite(d) && d > 1) distance = d;
+        }
+      }catch(_){ }
+    }
+    function apply(){
+      if(!shouldRun()) return;
+      try{
+        viewer.camera.lookAtTransform(orbitFrame, new Cesium.HeadingPitchRange(heading, clampPitch(pitch), Math.max(8, distance)));
+        requestSceneRender();
+      }catch(_){ }
+    }
+    function setOrbit(frame, center, initialHeading, initialPitch, initialDistance){
+      orbitFrame = frame || null;
+      orbitCenter = center ? Cesium.Cartesian3.clone(center, new Cesium.Cartesian3()) : null;
+      heading = Number.isFinite(initialHeading) ? initialHeading : heading;
+      pitch = clampPitch(initialPitch);
+      distance = Math.max(8, Number(initialDistance) || distance || 120);
+      if(enabled && currentMode === 'exterior' && !isCinematicFreeCamera()) apply();
+    }
+
+    el.addEventListener('pointerdown', function(evt){
+      if(!shouldRun()) return;
+      if(evt.button !== undefined && evt.button !== 0) return;
+      if(evt.pointerType === 'touch' && !evt.isPrimary) return;
+      pointerId = evt.pointerId;
+      lastX = evt.clientX;
+      lastY = evt.clientY;
+      dragging = false;
+      syncFromCamera();
+      try{ el.setPointerCapture && el.setPointerCapture(pointerId); }catch(_){ }
+    }, { passive:false });
+
+    el.addEventListener('pointermove', function(evt){
+      if(!shouldRun()) return;
+      // v59 fix: never orbit from plain mouse hover. Only the active captured
+      // left-button pointer may drive the exterior orbit. This keeps the pitch
+      // limit behavior without making the camera follow the mouse constantly.
+      if(pointerId == null) return;
+      if(evt.pointerId !== pointerId) return;
+      if(evt.pointerType !== 'touch' && typeof evt.buttons === 'number' && (evt.buttons & 1) !== 1){
+        end(evt);
+        return;
+      }
+      const dx = evt.clientX - lastX;
+      const dy = evt.clientY - lastY;
+      if(!dragging && Math.sqrt(dx*dx + dy*dy) < MIN_DRAG_PX) return;
+      dragging = true;
+      lastX = evt.clientX;
+      lastY = evt.clientY;
+      heading -= dx * headingPerPixel;
+      pitch = clampPitch(pitch + dy * pitchPerPixel);
+      apply();
+      evt.preventDefault();
+      evt.stopPropagation();
+    }, { passive:false });
+
+    function end(evt){
+      if(!shouldRun() && !dragging){ pointerId = null; return; }
+      const capturedPointerId = pointerId;
+      pointerId = null;
+      const wasDragging = dragging;
+      dragging = false;
+      try{ el.releasePointerCapture && capturedPointerId != null && el.releasePointerCapture(capturedPointerId); }catch(_){ }
+      if(wasDragging && evt){
+        try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){ }
+      }
+    }
+    el.addEventListener('pointerup', end, { passive:false });
+    el.addEventListener('pointercancel', end, { passive:false });
+    el.addEventListener('lostpointercapture', function(){ dragging = false; pointerId = null; }, { passive:true });
+
+    // Keep native wheel/pinch zoom, but refresh our stored range before the next safe orbit drag.
+    el.addEventListener('wheel', function(){
+      if(!shouldRun()) return;
+      setTimeout(syncFromCamera, 0);
+    }, { passive:true });
+
+    return {
+      enable(){ enabled = true; dragging = false; },
+      disable(){ enabled = false; dragging = false; pointerId = null; },
+      setOrbit:setOrbit,
+      isDragging(){ return dragging; }
+    };
+  })();
+
   setExteriorMouseBindings();
 
   // ===== Keyboard/Joystick move =====
   function makeInteriorKeyboardMove(viewer){
-    let enabled=false, down={}, baseSpeed=0.8, lastT=performance.now(), jx=0,jy=0,jz=0;
-    function onKD(e){ const tag=(e.target&&e.target.tagName)||''; if(['INPUT','TEXTAREA','SELECT'].includes(tag)) return; if(['KeyW','KeyA','KeyS','KeyD','KeyQ','KeyE','ShiftLeft','ShiftRight'].includes(e.code)) e.preventDefault(); down[e.code]=true; }
-    function onKU(e){ const tag=(e.target&&e.target.tagName)||''; if(['INPUT','TEXTAREA','SELECT'].includes(tag)) return; down[e.code]=false; }
+    let enabled=false, down={}, baseSpeed=2.2, lastT=performance.now(), jx=0,jy=0,jz=0, rafId=0;
+    const MOVE_KEYS = ['KeyW','KeyA','KeyS','KeyD','KeyQ','KeyE','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ShiftLeft','ShiftRight'];
+    function isTypingTarget(e){
+      const tag=(e.target&&e.target.tagName)||'';
+      if(e.target && e.target.isContentEditable) return true;
+      if(tag === 'TEXTAREA') return true;
+      // In HomeView interior mode, WASD/arrow keys should move the camera even when the controls panel is open.
+      // We only protect real free-text typing fields. Select/buttons should not steal navigation keys.
+      if(tag === 'INPUT'){
+        const type = String((e.target && e.target.type) || '').toLowerCase();
+        return ['text','search','url','email','password','number','tel'].includes(type) && !MOVE_KEYS.includes(e.code);
+      }
+      return false;
+    }
+    function onKD(e){
+      if(!enabled) return;
+      if(isTypingTarget(e)) return;
+      if(MOVE_KEYS.includes(e.code)){
+        try{ if(document.activeElement && document.activeElement.blur && document.activeElement !== document.body) document.activeElement.blur(); }catch(_){ }
+        try{ e.preventDefault(); e.stopPropagation(); if(e.stopImmediatePropagation) e.stopImmediatePropagation(); }catch(_){ }
+        down[e.code]=true;
+      }
+    }
+    function onKU(e){
+      if(MOVE_KEYS.includes(e.code)){
+        try{ e.preventDefault(); e.stopPropagation(); if(e.stopImmediatePropagation) e.stopImmediatePropagation(); }catch(_){ }
+        down[e.code]=false;
+      }
+    }
     function tick(){
       if(!enabled) return;
       const now=performance.now(), dt=Math.min(0.05,(now-lastT)/1000); lastT=now;
       const cam=viewer.camera; const mult=(down.ShiftLeft||down.ShiftRight)?3:1; const v=baseSpeed*mult;
-      if(down.KeyW)cam.moveForward(v*dt); if(down.KeyS)cam.moveBackward(v*dt); if(down.KeyA)cam.moveLeft(v*dt); if(down.KeyD)cam.moveRight(v*dt); if(down.KeyQ)cam.moveDown(v*dt); if(down.KeyE)cam.moveUp(v*dt);
-      if(Math.abs(jy)>0.02)cam.moveForward(v*dt*jy); if(Math.abs(jx)>0.02)cam.moveRight(v*dt*jx); if(Math.abs(jz)>0.02)cam.moveUp(v*dt*jz);
+      const forward = (down.KeyW || down.ArrowUp ? 1 : 0) - (down.KeyS || down.ArrowDown ? 1 : 0) + (Math.abs(jy)>0.02 ? jy : 0);
+      const right = (down.KeyD || down.ArrowRight ? 1 : 0) - (down.KeyA || down.ArrowLeft ? 1 : 0) + (Math.abs(jx)>0.02 ? jx : 0);
+      const up = (down.KeyE || down.Space ? 1 : 0) - (down.KeyQ ? 1 : 0) + (Math.abs(jz)>0.02 ? jz : 0);
+      if(Math.abs(forward)>0.001) cam.moveForward(v*dt*forward);
+      if(Math.abs(right)>0.001) cam.moveRight(v*dt*right);
+      if(Math.abs(up)>0.001) cam.moveUp(v*dt*up);
       clampCameraRollZero();
+      if(Math.abs(forward)>0.001 || Math.abs(right)>0.001 || Math.abs(up)>0.001) requestSceneRender();
+      rafId = requestAnimationFrame(tick);
     }
     return {
-      enable(){ if(enabled) return; enabled=true; lastT=performance.now(); window.addEventListener('keydown',onKD,{passive:false}); window.addEventListener('keyup',onKU,{passive:false}); viewer.clock.onTick.addEventListener(tick); },
-      disable(){ if(!enabled) return; enabled=false; window.removeEventListener('keydown',onKD); window.removeEventListener('keyup',onKU); viewer.clock.onTick.removeEventListener(tick); jx=jy=jz=0; },
-      setSpeed(v){ baseSpeed=v; }, setJoyAxes(ax,ay){ jx=ax; jy=ay; }, setJoyZ(az){ jz=az; }
+      enable(){
+        if(enabled) return;
+        enabled=true; down={}; lastT=performance.now();
+        window.addEventListener('keydown',onKD,{capture:true, passive:false});
+        window.addEventListener('keyup',onKU,{capture:true, passive:false});
+        try{ viewer.clock.onTick.addEventListener(tick); }catch(_){ }
+        if(rafId) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(tick);
+      },
+      disable(){
+        if(!enabled) return;
+        enabled=false; down={};
+        window.removeEventListener('keydown',onKD,true);
+        window.removeEventListener('keyup',onKU,true);
+        try{ viewer.clock.onTick.removeEventListener(tick); }catch(_){ }
+        if(rafId) cancelAnimationFrame(rafId); rafId=0;
+        jx=jy=jz=0;
+      },
+      setSpeed(v){ baseSpeed=Number(v)||baseSpeed; }, setJoyAxes(ax,ay){ jx=ax; jy=ay; }, setJoyZ(az){ jz=az; }
     };
   }
-  const interiorNav = makeInteriorKeyboardMove(viewer); interiorNav.setSpeed(0.8);
+  const interiorNav = makeInteriorKeyboardMove(viewer); interiorNav.setSpeed(2.2);
 
   // ===== Mobile joystick =====
   const joy = document.createElement('div');
@@ -3489,17 +3400,13 @@ async function refreshFutureProjects(bIdx){
   displayOptionsWrap.innerHTML = `
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showJoystickToggle" type="checkbox"> Show camera joystick</label>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showMinimapToggle" type="checkbox" checked> Show minimap</label>
-    <label style="display:none;align-items:center;gap:8px;cursor:pointer"><input id="autoHideUIToggle" type="checkbox"> Auto-hide UI when idle</label>
     <button id="presentationModeBtn" class="ui-btn" style="width:100%;border-radius:8px;padding:8px;cursor:pointer;font-weight:700">Presentation Mode</button>`;
   gfxCard.appendChild(displayOptionsWrap);
   const showJoystickToggle = displayOptionsWrap.querySelector('#showJoystickToggle');
   const showMinimapToggle = displayOptionsWrap.querySelector('#showMinimapToggle');
-  const autoHideUIToggle = displayOptionsWrap.querySelector('#autoHideUIToggle');
+  const autoHideUIToggle = null; // HomeView v56: auto-hide UI removed
   const presentationModeBtn = displayOptionsWrap.querySelector('#presentationModeBtn');
   showJoystickToggle.checked = cameraJoystickEnabledByUser;
-  showMinimapToggle.checked = minimapEnabledByUser;
-  autoHideUIToggle.checked = false;
-  autoHideUIToggle.disabled = true;
   const editorAuthWrap = document.createElement('div');
   editorAuthWrap.style.cssText = "margin-top:12px;padding-top:12px;border-top:1px solid rgba(0,0,0,.08);display:flex;flex-direction:column;gap:8px";
   editorAuthWrap.innerHTML = `
@@ -3598,11 +3505,12 @@ async function refreshFutureProjects(bIdx){
   function enterCinematicSetupFreeCamera(){
     if(cinematicIsPlaying || currentMode !== 'exterior' || cinematicSetupFreeCameraActive) return;
     cinematicSetupFreeCameraActive = true;
+    try{ window.__hvCinematicFreeCameraActive = true; }catch(_){ }
     try{
       // While setting Start/End in Building View, unlock the camera like interior mode
       // so admins can frame exact camera positions and angles.
       stopCameraTracking();
-      setCinematicSetupMouseBindings();
+      setInteriorMouseBindings();
       interiorNav.enable();
       setJoystickVisible(true);
     }catch(_){ }
@@ -3610,6 +3518,7 @@ async function refreshFutureProjects(bIdx){
   function exitCinematicSetupFreeCamera(){
     if(!cinematicSetupFreeCameraActive) return;
     cinematicSetupFreeCameraActive = false;
+    try{ window.__hvCinematicFreeCameraActive = false; }catch(_){ }
     try{
       if(currentMode === 'exterior'){
         setExteriorMouseBindings();
@@ -3634,6 +3543,14 @@ async function refreshFutureProjects(bIdx){
       enterCinematicSetupFreeCamera();
     }else{
       cinematicFocusPickPending = false;
+      try{
+        if(!cinematicIsPlaying){
+          window.__hvCinematicFreeCameraActive = false;
+          window.__hvCinematicPlaying = false;
+          cinematicSetupFreeCameraActive = false;
+          cinematicStopRequested = false;
+        }
+      }catch(_){ }
       updateCinematicStatus();
       exitCinematicSetupFreeCamera();
     }
@@ -3906,6 +3823,13 @@ async function refreshFutureProjects(bIdx){
     }
     cinematicSavedInputState = null;
     try{
+      // v60: after a cinematic path/orbit completes, make sure stale global flags cannot keep
+      // the Building View exterior orbit disabled. If the cinematic panel is still open, setup
+      // free-camera mode is restored below; otherwise Building View returns to normal orbit.
+      if(!(typeof isCinematicPanelOpen === 'function' && isCinematicPanelOpen())){
+        try{ window.__hvCinematicFreeCameraActive = false; window.__hvCinematicPlaying = false; }catch(_){ }
+        try{ cinematicSetupFreeCameraActive = false; }catch(_){ }
+      }
       if(currentMode === 'interior'){
         setInteriorMouseBindings();
         interiorNav.enable();
@@ -3918,6 +3842,7 @@ async function refreshFutureProjects(bIdx){
           interiorNav.enable();
           setJoystickVisible(true);
           cinematicSetupFreeCameraActive = true;
+          try{ window.__hvCinematicFreeCameraActive = true; }catch(_){ }
         }else{
           setExteriorMouseBindings();
           interiorNav.disable();
@@ -3973,6 +3898,7 @@ async function refreshFutureProjects(bIdx){
     const localZ = Number.isFinite(localStart.z) ? localStart.z : 0;
 
     cinematicIsPlaying = true;
+    try{ window.__hvCinematicPlaying = true; }catch(_){ }
     cinematicStopRequested = false;
     setCinematicInputsEnabled(false);
     updateCinematicStatus();
@@ -4011,6 +3937,7 @@ async function refreshFutureProjects(bIdx){
     });
 
     cinematicIsPlaying = false;
+    try{ window.__hvCinematicPlaying = false; }catch(_){ }
     cinematicStopRequested = false;
     restoreCameraInputsAfterCinematic();
     restoreCinematicChrome();
@@ -4036,6 +3963,7 @@ async function refreshFutureProjects(bIdx){
       return;
     }
     cinematicIsPlaying = true;
+    try{ window.__hvCinematicPlaying = true; }catch(_){ }
     cinematicStopRequested = false;
     setCinematicInputsEnabled(false);
     updateCinematicStatus();
@@ -4087,6 +4015,7 @@ async function refreshFutureProjects(bIdx){
     });
 
     cinematicIsPlaying = false;
+    try{ window.__hvCinematicPlaying = false; }catch(_){ }
     cinematicStopRequested = false;
     restoreCameraInputsAfterCinematic();
     restoreCinematicChrome();
@@ -4215,7 +4144,8 @@ async function refreshFutureProjects(bIdx){
   let uiAutoHideTimer = null;
   function setUiAutoHidden(hidden){
     if(presentationModeActive) return;
-    uiAutoHidden = !!hidden;
+    // HomeView v56: app UI should never auto-hide. Only presentation mode may hide UI.
+    uiAutoHidden = false;
     if((gfxCard.style.display && gfxCard.style.display !== 'none') || (typeof cinematicCard !== 'undefined' && cinematicCard.style.display && cinematicCard.style.display !== 'none')) return;
     setElementSoftHidden(chartDiv, uiAutoHidden);
     setElementSoftHidden(gfxBtn, uiAutoHidden);
@@ -4226,20 +4156,13 @@ async function refreshFutureProjects(bIdx){
     if(compassRoot) setElementSoftHidden(compassRoot, uiAutoHidden);
   }
   function markUiActive(){
-    if(presentationModeActive) return;
-    if(uiAutoHideTimer){ clearTimeout(uiAutoHideTimer); uiAutoHideTimer = null; }
-    setUiAutoHidden(false);
-    if(!autoHideUIEnabled) return;
-    uiAutoHideTimer = setTimeout(function(){ setUiAutoHidden(true); }, 5000);
+    // HomeView v56: auto-hide UI is completely removed.
+    // Keep this function as a compatibility no-op because many UI actions call markUiActive().
+    try{
+      if(uiAutoHideTimer){ clearTimeout(uiAutoHideTimer); uiAutoHideTimer = null; }
+      setUiAutoHidden(false);
+    }catch(_){ }
   }
-  autoHideUIToggle.addEventListener('change', function(){
-    autoHideUIEnabled = false;
-    autoHideUIToggle.checked = false;
-    markUiActive();
-  });
-  ['pointermove','mousedown','keydown','touchstart','wheel'].forEach(function(ev){
-    window.addEventListener(ev, markUiActive, { passive:true });
-  });
   markUiActive();
 
   function updateEditorAuthUI(){
@@ -5010,7 +4933,7 @@ async function refreshFutureProjects(bIdx){
     // POI sources
     const poiSources=[]; const poiIndexById=new Map(); const pinBuilder=new Cesium.PinBuilder();
     const POI_LABEL_HEIGHT_M = IS_MOBILE ? 34 : 42;
-    const POI_LEADER_LINE_WIDTH = IS_MOBILE ? 1.5 : 2.0;
+    const POI_LEADER_LINE_WIDTH = 1.0;
     const POI_GROUND_DOT_SIZE = IS_MOBILE ? 7 : 9;
     function colorForType(type){ return Cesium.Color.fromCssColorString(getAmenityStyle(type).color); }
     function poiBillboard(type,icon){ const col=colorForType(type); const txt = (icon || getAmenityIcon(type) || '').trim(); const img = txt ? pinBuilder.fromText(txt,col,42).toDataURL() : pinBuilder.fromColor(col,32).toDataURL(); return { image:img, verticalOrigin:Cesium.VerticalOrigin.BOTTOM, scale:1, disableDepthTestDistance:Number.POSITIVE_INFINITY }; }
@@ -5213,22 +5136,13 @@ async function refreshFutureProjects(bIdx){
             material: Cesium.Color.WHITE.withAlpha(0.88),
             clampToGround: false
           },
-          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvPoiLeaderLine:true, hvNoCameraFocus:true },
+          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvPoiLeaderLine:true },
           show: i===0
         });
 
-        const groundEnt = ds.entities.add({
-          position: Cesium.Cartesian3.fromDegrees(plng, plat, approxGroundZ),
-          point: {
-            pixelSize: POI_GROUND_DOT_SIZE,
-            color: Cesium.Color.WHITE.withAlpha(0.92),
-            outlineColor: Cesium.Color.fromCssColorString(getAmenityStyle(type).color).withAlpha(0.95),
-            outlineWidth: 2,
-            disableDepthTestDistance: Number.POSITIVE_INFINITY
-          },
-          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvPoiGroundAnchor:true, hvNoCameraFocus:true },
-          show: i===0
-        });
+        // v54: Do not draw ground dots under POI leader lines.
+        // The vertical line is enough and looks cleaner in both desktop and mobile views.
+        const groundEnt = null;
 
         const ent=ds.entities.add({
           position: Cesium.Cartesian3.fromDegrees(plng,plat,groundOffset),
@@ -5243,12 +5157,12 @@ async function refreshFutureProjects(bIdx){
               disableDepthTestDistance: Number.POSITIVE_INFINITY
             };
           })(),
-          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset, hvNoCameraFocus:true },
+          properties: { type, url: poi.url||'', name: poi.name||'', distance_m:Math.round(dist), baseLat:plat, baseLng:plng, groundOffset:groundOffset },
           show: i===0
         });
         poiIndexById.set(ent.id,{dsIndex:i});
         poiIndexById.set(lineEnt.id,{dsIndex:i});
-        poiIndexById.set(groundEnt.id,{dsIndex:i});
+        if(groundEnt) poiIndexById.set(groundEnt.id,{dsIndex:i});
         types.add(type||'other');
       });
 
@@ -5431,7 +5345,7 @@ async function refreshFutureProjects(bIdx){
       if(!options.silent) requestSceneRenderBurst(4);
     }
 
-    activeRoomModelState = { key:'', currentRoomKey:'__base__', handle:null, cache:new Map(), token:0, lastBlobUrl:null };
+    activeRoomModelState = { key:'', currentRoomKey:'__base__', currentRoomMeta:null, handle:null, cache:new Map(), token:0, lastBlobUrl:null };
 
     // Room memory policy:
     // A hidden Cesium model can still keep GPU buffers/textures alive. Keep only one active interior/room
@@ -5579,6 +5493,8 @@ async function refreshFutureProjects(bIdx){
           else if(hasTextValue(livingRoom.cameraHeading)) baseMeta.camera_heading = livingRoom.cameraHeading;
           if(hasTextValue(livingRoom.camera_pitch)) baseMeta.camera_pitch = livingRoom.camera_pitch;
           if(hasTextValue(livingRoom.camera_look_distance)) baseMeta.camera_look_distance = livingRoom.camera_look_distance;
+          if(hasTextValue(livingRoom.audio_url)) baseMeta.audio_url = livingRoom.audio_url;
+          else if(hasTextValue(livingRoom.audioUrl)) baseMeta.audio_url = livingRoom.audioUrl;
           baseMeta.__baseRoomCameraSource = livingRoom.key || livingRoom.label || 'living';
         }
         return baseMeta;
@@ -5596,6 +5512,7 @@ async function refreshFutureProjects(bIdx){
       hvReleaseRoomBlobUrl();
       activeRoomModelState.key = '';
       activeRoomModelState.currentRoomKey = '__base__';
+      activeRoomModelState.currentRoomMeta = null;
       activeRoomModelState.handle = null;
       try{ renderSelectionLabels(); syncQuickShowLabelsButton(); }catch(_){ }
       if(!keepCache){
@@ -5613,6 +5530,7 @@ async function refreshFutureProjects(bIdx){
         }
         activeRoomModelState.key = '';
         activeRoomModelState.currentRoomKey = '__base__';
+        activeRoomModelState.currentRoomMeta = null;
         activeRoomModelState.handle = null;
         hvReleaseRoomBlobUrl();
         let baseHandle = (interiorEntitiesByBuilding[sel.bIdx] || [])[sel.itemIdx] || null;
@@ -5633,6 +5551,7 @@ async function refreshFutureProjects(bIdx){
           const meta = (interiorMetaByBuilding[sel.bIdx] || [])[sel.itemIdx] || {};
           const buildingRow = b[sel.bIdx] || {};
           const baseCameraRow = hvBuildBaseRoomCameraRow(meta, buildingRow);
+          try{ activeRoomModelState.currentRoomMeta = baseCameraRow; }catch(_){ }
           await hvFrameActiveInteriorModelCamera(baseHandle, baseCameraRow, buildingRow, { burst:10, maxTries:45, roomKey:'__base__' });
           title.textContent = (buildingRow.name||'') + ' — ' + getItemDisplayName(meta, 'Unit');
           currentMode = 'interior';
@@ -5644,6 +5563,7 @@ async function refreshFutureProjects(bIdx){
           setJoystickVisible(cameraJoystickEnabledByUser);
         }catch(_){}
         try{ hvEnsureCurrentLabelSelectionForActiveInterior(); renderSelectionLabels(); syncQuickShowLabelsButton(); }catch(_){}
+        try{ hvUpdateNarrationAudioForSelection(labelEditorState.currentSelection); }catch(_){}
         requestSceneRenderBurst(8);
         return true;
       }catch(err){
@@ -5737,6 +5657,8 @@ async function applyRoomModelForCurrent(actionValue){
         else if(hasTextValue(room.cameraXyz)) roomRow.camera_xyz = room.cameraXyz;
         if(hasTextValue(room.camera_heading)) roomRow.camera_heading = room.camera_heading;
         else if(hasTextValue(room.cameraHeading)) roomRow.camera_heading = room.cameraHeading;
+        if(hasTextValue(room.audio_url)) roomRow.audio_url = room.audio_url;
+        else if(hasTextValue(room.audioUrl)) roomRow.audio_url = room.audioUrl;
 
         const createStart = performance.now();
         const handle = await createInteriorModel(buildingRow, roomRow, viewer, roomModelUrl, null, null);
@@ -5749,6 +5671,7 @@ async function applyRoomModelForCurrent(actionValue){
 
         activeRoomModelState.key = sel.bIdx + ':' + sel.itemIdx + ':' + (room.key || cleanActionValue);
         activeRoomModelState.currentRoomKey = hvSlugifyRoomKey(room.key || room.label || cleanActionValue);
+        activeRoomModelState.currentRoomMeta = roomRow;
         activeRoomModelState.handle = handle;
         activeRoomModelState.lastBlobUrl = roomModelUrl;
 
@@ -5779,6 +5702,7 @@ async function applyRoomModelForCurrent(actionValue){
         }
 
         try{ title.textContent = (buildingRow.name||'') + ' — ' + getItemDisplayName(meta, '') + ' — ' + (room.label || room.key || 'Room'); }catch(_){ }
+        try{ hvUpdateNarrationAudioForSelection(labelEditorState.currentSelection); }catch(_){ }
         try{
           currentMode = 'interior';
           try{ mini.hide(); }catch(_){ }
@@ -5809,6 +5733,7 @@ async function applyRoomModelForCurrent(actionValue){
           hvShowModelHandle(baseHandle, true);
           hvReleaseRoomBlobUrl();
           activeRoomModelState.currentRoomKey = '__base__';
+          activeRoomModelState.currentRoomMeta = null;
           activeRoomModelState.key = '';
           activeRoomModelState.handle = null;
           renderSelectionLabels();
@@ -6011,7 +5936,18 @@ async function applyRoomModelForCurrent(actionValue){
         let key = '';
         let title = '';
         let url = '';
-        if(parts.length >= 3){
+        let audioUrl = '';
+        // Supported:
+        //   imageUrl
+        //   Title::imageUrl
+        //   sceneKey::Scene Title::imageUrl
+        //   sceneKey::Scene Title::imageUrl::audioUrl
+        if(parts.length >= 4){
+          key = parts[0];
+          title = parts[1];
+          url = parts[2];
+          audioUrl = parts.slice(3).join('::');
+        } else if(parts.length >= 3){
           key = parts[0];
           title = parts[1];
           url = parts.slice(2).join('::');
@@ -6027,7 +5963,9 @@ async function applyRoomModelForCurrent(actionValue){
         if(!url) return null;
         key = (key || title || ('panorama_' + (idx + 1))).trim();
         title = (title || key || ('Panorama ' + (idx + 1))).trim();
-        return { key:key, title:title, url:url.trim() };
+        const item = { key:key, title:title, url:url.trim() };
+        if(audioUrl) item.audioUrl = audioUrl.trim();
+        return item;
       }).filter(Boolean);
     }
 
@@ -6074,6 +6012,194 @@ async function applyRoomModelForCurrent(actionValue){
       const item = getActivePanoramaItemForSelection(sel);
       return item ? String(item.key || item.title || '').trim() : '';
     }
+
+    // ===== HomeView Narration Audio (Panorama + 3D Models) =====
+    // Optional audio fields:
+    // 1) For panorama_items:
+    //      sceneKey::Scene Title::imageUrl::audioUrl
+    //    audioUrl is optional. If it is empty, no narration button is shown.
+    //
+    // 2) For any selected 3D model / unit / panorama row, add one of these columns:
+    //      audio_url, narration_url, voice_url, model_audio_url, interior_audio_url, unit_audio_url
+    //    If a panorama scene has its own audioUrl, that scene audio wins. Otherwise the row-level audio_url is used.
+    const hvNarrationAudio = new Audio();
+    hvNarrationAudio.preload = 'none';
+    let hvActiveNarrationAudioUrl = '';
+    let hvActiveNarrationAudioLabel = '';
+    const hvNarrationAudioBtn = document.createElement('button');
+    hvNarrationAudioBtn.type = 'button';
+    hvNarrationAudioBtn.id = 'hvNarrationAudioBtn';
+    hvNarrationAudioBtn.textContent = '🎧 Hear narration';
+    hvNarrationAudioBtn.style.cssText = [
+      'position:fixed',
+      'right:14px',
+      'top:14px',
+      'z-index:9999',
+      'display:none',
+      'align-items:center',
+      'gap:8px',
+      'border:1px solid rgba(255,255,255,.55)',
+      'border-radius:999px',
+      'padding:10px 14px',
+      'background:rgba(0,0,0,.70)',
+      'color:#fff',
+      'font:800 13px system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
+      'box-shadow:0 10px 30px rgba(0,0,0,.28)',
+      'backdrop-filter:blur(8px)',
+      'cursor:pointer',
+      'touch-action:manipulation',
+      'max-width:min(260px,70vw)',
+      'white-space:nowrap',
+      'overflow:hidden',
+      'text-overflow:ellipsis'
+    ].join(';');
+    document.body.appendChild(hvNarrationAudioBtn);
+
+    function hvNormalizeNarrationAudioUrl(raw){
+      try{
+        let url = String(raw || '').trim();
+        if(!url) return '';
+        // Sheet cells often keep a trailing delimiter when copied from room_model_items.
+        // Examples: audio.mp3?;  audio.mp3;  "audio.mp3"
+        url = url.replace(/^[\s"'`]+|[\s"'`;]+$/g, '').trim();
+        // Remove only empty query/hash marks left by copy/paste. Do not remove real query tokens.
+        while(/[?#&]$/.test(url)) url = url.slice(0, -1).trim();
+        if(!/^https?:\/\//i.test(url) && !/^blob:/i.test(url) && !/^data:audio\//i.test(url)) return '';
+
+        // Dropbox sharing links should be converted to a direct media response for <audio>.
+        if(/^https?:\/\/(www\.)?dropbox\.com\//i.test(url)){
+          url = url.replace(/^https?:\/\/(www\.)?dropbox\.com\//i, 'https://dl.dropboxusercontent.com/');
+        }
+        if(/dropboxusercontent\.com|dropbox\.com/i.test(url)){
+          // If a Dropbox query exists, prefer dl=1. If there is no query, leave the direct URL alone.
+          if(/[?&]dl=0(?:&|$)/i.test(url)) url = url.replace(/([?&])dl=0(?=&|$)/i, '$1dl=1');
+          if(/^https?:\/\/www\.dropbox\.com\//i.test(String(raw || '')) && !/[?&]dl=1(?:&|$)/i.test(url)){
+            url += (url.indexOf('?') >= 0 ? '&' : '?') + 'dl=1';
+          }
+        }
+        return url;
+      }catch(_){ return ''; }
+    }
+
+    function hvGetNarrationAudioUrlFromObject(obj){
+      return hvNormalizeNarrationAudioUrl(firstFilled(
+        obj && obj.audioUrl,
+        obj && obj.audio_url,
+        obj && obj.narrationUrl,
+        obj && obj.narration_url,
+        obj && obj.voiceUrl,
+        obj && obj.voice_url,
+        obj && obj.model_audio_url,
+        obj && obj.interior_audio_url,
+        obj && obj.unit_audio_url,
+        obj && obj.pano_audio_url,
+        obj && obj.panorama_audio_url
+      ));
+    }
+
+    function hvSetNarrationAudioButtonState(){
+      try{
+        if(!hvActiveNarrationAudioUrl){
+          hvNarrationAudioBtn.style.display = 'none';
+          return;
+        }
+        hvNarrationAudioBtn.style.display = 'flex';
+        hvNarrationAudioBtn.textContent = hvNarrationAudio.paused ? '🎧 Hear narration' : '⏸ Pause narration';
+        hvNarrationAudioBtn.title = hvActiveNarrationAudioLabel ? ('Narration: ' + hvActiveNarrationAudioLabel) : 'HomeView narration';
+      }catch(_){ }
+    }
+
+    function hvStopNarrationAudio(){
+      try{ hvNarrationAudio.pause(); }catch(_){ }
+      try{ hvNarrationAudio.currentTime = 0; }catch(_){ }
+      try{ hvNarrationAudio.removeAttribute('src'); hvNarrationAudio.load(); }catch(_){ }
+      hvActiveNarrationAudioUrl = '';
+      hvActiveNarrationAudioLabel = '';
+      hvSetNarrationAudioButtonState();
+    }
+
+    function hvResolveNarrationForSelection(sel){
+      try{
+        if(!sel || sel.isExterior || !sel.meta) return null;
+
+        // Panorama: per-scene audio is independent and has priority.
+        if(currentMode === 'panorama' && isPanoramaRow(sel.meta)){
+          const item = getActivePanoramaItemForSelection(sel);
+          const sceneAudio = hvGetNarrationAudioUrlFromObject(item);
+          if(sceneAudio){
+            return { url: sceneAudio, label: (item && (item.title || item.key)) || getItemDisplayName(sel.meta, 'Panorama') };
+          }
+          const rowAudio = hvGetNarrationAudioUrlFromObject(sel.meta) || hvGetNarrationAudioUrlFromObject(sel.row);
+          if(rowAudio){
+            return { url: rowAudio, label: getItemDisplayName(sel.meta, 'Panorama') };
+          }
+          return null;
+        }
+
+        // 3D model/unit/amenity/interior:
+        // - If the user is inside a room model and that room has its own audio_url, use it.
+        // - Otherwise use the selected unit/model row's audio_url.
+        if(currentMode === 'interior' || currentMode === 'amenity'){
+          const roomMeta = activeRoomModelState && activeRoomModelState.currentRoomMeta ? activeRoomModelState.currentRoomMeta : null;
+          const roomAudio = hvGetNarrationAudioUrlFromObject(roomMeta);
+          if(roomAudio){
+            return { url: roomAudio, label: getItemDisplayName(roomMeta, getRoomContextDisplayName ? getRoomContextDisplayName() : 'Room') };
+          }
+          const modelAudio = hvGetNarrationAudioUrlFromObject(sel.meta) || hvGetNarrationAudioUrlFromObject(sel.row);
+          if(modelAudio){
+            return { url: modelAudio, label: getItemDisplayName(sel.meta, '3D model') };
+          }
+        }
+      }catch(_){ }
+      return null;
+    }
+
+    function hvUpdateNarrationAudioForSelection(sel){
+      try{
+        const resolved = hvResolveNarrationForSelection(sel);
+        const audioUrl = hvNormalizeNarrationAudioUrl(resolved && resolved.url ? String(resolved.url).trim() : '');
+        if(!audioUrl){
+          hvStopNarrationAudio();
+          return;
+        }
+        if(audioUrl !== hvActiveNarrationAudioUrl){
+          try{ hvNarrationAudio.pause(); hvNarrationAudio.currentTime = 0; }catch(_){ }
+          hvActiveNarrationAudioUrl = audioUrl;
+          hvActiveNarrationAudioLabel = (resolved && resolved.label) || '';
+          hvNarrationAudio.src = audioUrl;
+          try{ hvNarrationAudio.load(); }catch(_){ }
+        }
+        hvSetNarrationAudioButtonState();
+      }catch(_){
+        hvStopNarrationAudio();
+      }
+    }
+
+    hvNarrationAudioBtn.addEventListener('click', function(evt){
+      try{ evt.preventDefault(); evt.stopPropagation(); }catch(_){ }
+      if(!hvActiveNarrationAudioUrl) return;
+      if(hvNarrationAudio.paused){
+        try{
+          // Re-assign the src right before play. This fixes some mobile/Dropbox cases where the audio element
+          // keeps a failed source state after a room switch.
+          if(hvNarrationAudio.src !== hvActiveNarrationAudioUrl){
+            hvNarrationAudio.src = hvActiveNarrationAudioUrl;
+          }
+          hvNarrationAudio.load();
+        }catch(_){ }
+        hvNarrationAudio.play().then(hvSetNarrationAudioButtonState).catch(function(err){
+          console.warn('HomeView narration could not play:', err, hvActiveNarrationAudioUrl);
+          hvNarrationAudioBtn.textContent = '🎧 Tap again to play';
+        });
+      }else{
+        hvNarrationAudio.pause();
+        hvSetNarrationAudioButtonState();
+      }
+    });
+    hvNarrationAudio.addEventListener('play', hvSetNarrationAudioButtonState);
+    hvNarrationAudio.addEventListener('pause', hvSetNarrationAudioButtonState);
+    hvNarrationAudio.addEventListener('ended', hvSetNarrationAudioButtonState);
+
     function getRawPanoramaSceneAnnotationString(meta){
       if(!meta) return '';
       const direct = firstFilled(meta.panorama_label_annotations, meta.panorama_labels);
@@ -6892,7 +7018,7 @@ function fmtMoneyNoDash(n){
       const root=document.createElement('div');
       root.id='miniTopRight';
       root.className='ui-card';
-      root.style.cssText="position:fixed;right:16px;top:16px;width:" + (IS_MOBILE ? "112px" : "260px") + ";height:" + (IS_MOBILE ? "112px" : "260px") + ";border-radius:12px;z-index:2100;overflow:hidden;display:" + ((minimapEnabledByUser && currentMode === 'exterior') ? "block" : "none") + ";background:#fff";
+      root.style.cssText="position:fixed;right:16px;top:16px;width:260px;height:260px;border-radius:12px;z-index:2100;overflow:hidden;display:block;background:#fff";
       document.body.appendChild(root);
 
       const stage=document.createElement('div');
@@ -7043,7 +7169,7 @@ function fmtMoneyNoDash(n){
 
       return {
         root,
-        show(){ root.style.display = (minimapEnabledByUser && currentMode === 'exterior') ? 'block' : 'none'; root.style.width = IS_MOBILE ? '112px' : '260px'; root.style.height = IS_MOBILE ? '112px' : '260px'; try{ setTimeout(function(){ map.invalidateSize(false); }, 40); }catch(_){} },
+        show(){ root.style.display = (minimapEnabledByUser && currentMode === 'exterior') ? 'block' : 'none'; },
         hide(){ root.style.display='none'; },
         setMode,
         setPane(pane){ if(pane === 'ai'){ setAiAdvisorOpen(true); return; } setMode('city'); },
@@ -7947,6 +8073,7 @@ if(saveLabelsBtn){
         if(thisToken !== panoramaApplyToken) return true;
         if(reloaded) reloaded.show = true;
         updatePanoramaLabelUiHints();
+        try{ hvUpdateNarrationAudioForSelection(labelEditorState.currentSelection); }catch(_){ }
         refreshLabelListUI();
         labelEditorStatus.textContent = 'Panorama changed to ' + (item.title || item.key || 'selected view') + '.';
         requestSceneRenderBurst(10);
@@ -8004,34 +8131,14 @@ if(saveLabelsBtn){
         // the selected/tracked entity or change the Building View camera target.
         try{ viewer.selectedEntity = undefined; }catch(_){ }
         try{ viewer.trackedEntity = undefined; }catch(_){ }
-        try{ hvRestoreExteriorOrbitIfNeeded('poi-click'); }catch(_){ }
+        try{ stopCameraTracking(); }catch(_){ }
         tip.style.display='none';
         requestSceneRenderBurst(2);
         return;
       }
       tip.style.display='none';
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-
-    handler.setInputAction(function(){
-      try{ hvRestoreExteriorOrbitIfNeeded('handler-left-double-click'); }catch(_){ }
-      try{ viewer.selectedEntity = undefined; viewer.trackedEntity = undefined; }catch(_){ }
-      tip.style.display='none';
-    }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
-
-
-    // Prevent Cesium default selection from stealing camera focus after a POI tap/click.
-    try{
-      viewer.selectedEntityChanged.addEventListener(function(ent){
-        try{
-          if(ent && ent.id && poiIndexById.has(ent.id)){
-            viewer.selectedEntity = undefined;
-            viewer.trackedEntity = undefined;
-            hvRestoreExteriorOrbitIfNeeded('poi-selected-entity');
-            requestSceneRenderBurst(2);
-          }
-        }catch(_){ }
-      });
-    }catch(_){ }
+    viewer.camera.changed.addEventListener(()=>{ tip.style.display='none'; });
 
     function refreshPoisForSelection(){
       const idx=Number(selectBox.value);
@@ -8299,10 +8406,7 @@ function hideUnitMetaUI(){
       const selectedIsPanorama = !isExterior && selectedKind==='panorama' && !!selectedMeta;
       setInteriorEntryButtonsVisibility(idx, isExterior);
       hideUnitAdLogo();
-      if(IS_MOBILE){
-        // Mobile-first: keep Controls collapsed so the 3D view is not covered on first impression.
-        setCollapsed(true);
-      } else if(SHOULD_COLLAPSE_CONTROLS_ON_INTERIOR){
+      if(SHOULD_COLLAPSE_CONTROLS_ON_INTERIOR){
         setCollapsed(!isExterior);
       } else {
         setCollapsed(false);
@@ -8319,6 +8423,7 @@ function hideUnitMetaUI(){
       currentMode = isExterior ? 'exterior' : (selectedIsPanorama ? 'panorama' : (selectedIsAmenity ? 'amenity' : 'interior'));
       try{ syncQuickShowLabelsButton(); }catch(_){ }
       labelEditorState.currentSelection = { bIdx: idx, kind: selectedKind, itemIdx: selectedIndex, meta: selectedMeta, row: row, isExterior: isExterior };
+      try{ hvUpdateNarrationAudioForSelection(labelEditorState.currentSelection); }catch(_){ }
       try{ syncQuickShowLabelsButton(); }catch(_){ }
 
       const thisSwitchToken = ++interiorSwitchToken;
@@ -8397,6 +8502,18 @@ function hideUnitMetaUI(){
       if(showFutureProjectsToggle && showFutureProjectsToggle.checked && hasFutureProjectsByBuilding[idx]) refreshFutureProjects(idx); else clearAllFutureProjectEntities();
 
       if(isExterior){
+        // v60: returning to Building View after Cinematic Camera must always restore the normal
+        // safe exterior orbit. A completed/closed cinematic session could leave HomeView's
+        // global cinematic flags in a free-camera state, which made the camera look locked until refresh.
+        try{
+          if(!(typeof isCinematicPanelOpen === 'function' && isCinematicPanelOpen())){
+            window.__hvCinematicFreeCameraActive = false;
+            window.__hvCinematicPlaying = false;
+            if(typeof cinematicSetupFreeCameraActive !== 'undefined') cinematicSetupFreeCameraActive = false;
+            if(typeof cinematicIsPlaying !== 'undefined') cinematicIsPlaying = false;
+            if(typeof cinematicStopRequested !== 'undefined') cinematicStopRequested = false;
+          }
+        }catch(_){ }
         setExteriorMouseBindings(); interiorNav.disable(); setJoystickVisible(false);
         setCameraCollision(true);
         const lon=toNum(row.lng), lat=toNum(row.lat);
@@ -8430,14 +8547,13 @@ function hideUnitMetaUI(){
           const sphereRadius = Math.max(12, Math.max(scale || 0, height || 0));
           const duration = currentMode === 'exterior' ? (IS_MOBILE ? 0.7 : 1.0) : (IS_MOBILE ? 0.9 : 1.2);
           const orbitFrame = Cesium.Transforms.eastNorthUpToFixedFrame(center);
-          const safeExteriorPitch = Math.max(Cesium.Math.toRadians(-58), Math.min(Cesium.Math.toRadians(-12), pitch));
-          const orbitOffset = new Cesium.HeadingPitchRange(heading, safeExteriorPitch, distance);
-          hvRememberExteriorOrbit(center, heading, safeExteriorPitch, distance);
+          const orbitOffset = new Cesium.HeadingPitchRange(heading, pitch, distance);
           function lockExteriorOrbitCamera(){
             try{
               // Keep Building View in a local ENU frame so left-drag rotates around the selected building,
               // not around the globe/camera position. This restores the original orbit-style exterior control.
-              viewer.scene.camera.lookAtTransform(orbitFrame, orbitOffset);
+              try{ exteriorOrbitController && exteriorOrbitController.setOrbit(orbitFrame, center, heading, pitch, distance); }catch(_){ }
+              viewer.scene.camera.lookAtTransform(orbitFrame, new Cesium.HeadingPitchRange(heading, pitch, distance));
             }catch(_){ }
             setExteriorMouseBindings();
             requestSceneRenderBurst(4);
@@ -8513,6 +8629,7 @@ function hideUnitMetaUI(){
         setJoystickVisible(false);
         clampCameraRollZero();
         updatePanoramaLabelUiHints();
+        try{ hvUpdateNarrationAudioForSelection(labelEditorState.currentSelection); }catch(_){ }
 
         applyFixedInteriorFov();
 
@@ -8617,6 +8734,10 @@ function hideUnitMetaUI(){
         const meta=selectedMeta||{};
         if(ent){
           const baseCameraRow = hvBuildBaseRoomCameraRow(meta, row);
+          try{
+            activeRoomModelState.currentRoomKey = '__base__';
+            activeRoomModelState.currentRoomMeta = baseCameraRow;
+          }catch(_){ }
           await hvFrameActiveInteriorModelCamera(ent, baseCameraRow, row, { burst:10, roomKey:'__base__' });
           syncInteriorClipForSelection(meta, row, false);
           setCameraCollision(false);
@@ -8635,6 +8756,7 @@ function hideUnitMetaUI(){
           descBox.textContent = d;
           adminBuildingViewsCard.style.display = 'none';
           showUnitAdLogo(meta, row);
+          try{ hvUpdateNarrationAudioForSelection(labelEditorState.currentSelection); }catch(_){ }
 
           const chartSeries = firstFilled(meta.estimated_price_unit, meta.estimated_price, row.estimated_price);
           if (chartSeries) {
@@ -8842,8 +8964,6 @@ function hideUnitMetaUI(){
       hvGuideBubble.style.transform = 'none';
     }
     function hvRunGuide(kind, steps){
-      // UX polish: first-run tutorial is disabled. HomeView should be self-explanatory, not interrupt users.
-      return;
       if(hvGuideActive || !steps || !steps.length) return;
       if(hvSafeLocalGet(hvOnboardingSeenKey(kind))) return;
       hvGuideActive = true;
@@ -8889,13 +9009,12 @@ function hideUnitMetaUI(){
       }catch(err){ console.warn('HomeView guide failed:', err); }
     }
     function hvScheduleContextGuide(delay){
-      // First-run guide disabled by request. Keep function for compatibility.
-      return;
+      setTimeout(hvMaybeRunContextGuide, Number(delay || 550));
     }
 
 
     // init
-    setCollapsed(IS_MOBILE);
+    setCollapsed(false);
     setLaunchLoadingText('Opening HomeView...');
     const usedSharedTarget = applyInitialShareLinkFromUrl();
     if(!usedSharedTarget){
