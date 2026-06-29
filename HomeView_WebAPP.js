@@ -47,6 +47,81 @@ forceLightCSS.textContent = `
 `;
 document.head.appendChild(forceLightCSS);
 
+// ===== HomeView mobile layout polish =====
+// Compact left controls on mobile, and fully remove the minimap on touch/small screens.
+const hvMobileLayoutCSS = document.createElement('style');
+hvMobileLayoutCSS.textContent = `
+  @media (max-width: 640px), (pointer: coarse) {
+    #chartContainer {
+      left: 8px !important;
+      top: 8px !important;
+      width: min(78vw, 300px) !important;
+      max-height: 42vh !important;
+      padding: 8px !important;
+      border-radius: 14px !important;
+      font-size: 12px !important;
+    }
+    #chartContainer > div:first-child {
+      gap: 6px !important;
+      margin-bottom: 6px !important;
+    }
+    #chartContainer button {
+      min-height: 30px !important;
+      font-size: 11px !important;
+    }
+    #chartContainer select,
+    #chartContainer input {
+      min-height: 32px !important;
+      font-size: 12px !important;
+      padding: 6px !important;
+    }
+    #miniTopRight {
+      display: none !important;
+      pointer-events: none !important;
+    }
+  }
+`;
+document.head.appendChild(hvMobileLayoutCSS);
+const hvMobileLogoRestoreCSS = document.createElement('style');
+hvMobileLogoRestoreCSS.textContent = `
+/* v65: keep the external partner/link logo visible in mobile panoramas and interiors. */
+@media (max-width: 640px), (pointer: coarse) {
+  #unitAdWrap {
+    left: 10px !important;
+    bottom: 10px !important;
+    max-width: 92px !important;
+    max-height: 56px !important;
+    padding: 5px !important;
+    border-radius: 12px !important;
+    z-index: 2400 !important;
+  }
+  #unitAdWrap img {
+    max-width: 82px !important;
+    max-height: 44px !important;
+  }
+}
+`;
+document.head.appendChild(hvMobileLogoRestoreCSS);
+
+// ===== HomeView persistent top controls polish =====
+const hvTopControlsCSS = document.createElement('style');
+hvTopControlsCSS.textContent = `
+  #chartContainer { overflow-x:hidden !important; }
+  #chartContainer #quickShareBtn { display:inline-flex !important; }
+  @media (max-width: 640px), (pointer: coarse) {
+    #chartContainer { width:min(86vw, 320px) !important; }
+    #chartContainer #quickShareBtn {
+      width:auto !important;
+      min-width:74px !important;
+      padding:0 10px !important;
+      font-size:11px !important;
+      font-weight:700 !important;
+    }
+  }
+`;
+document.head.appendChild(hvTopControlsCSS);
+
+
 Promise.all([
   new Promise(r=>chartScript.onload=r),
   new Promise(r=>papaScript.onload=r),
@@ -137,7 +212,7 @@ Promise.all([
   const DEFAULT_INTERIOR_FOV_DEG = 100;
   let currentModelQualityPreset = 'standard';
   let cameraJoystickEnabledByUser = true;
-  let minimapEnabledByUser = true;
+  let minimapEnabledByUser = !IS_MOBILE; // Mobile UX: no minimap on phones/tablets by default.
   let autoHideUIEnabled = false; // HomeView v56: auto-hide removed completely.
   var navigationLabelsEnabled = true;
   var infoLabelsEnabled = false;
@@ -1484,7 +1559,7 @@ function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
     position:fixed;
     left:16px;
     top:16px;
-    width:360px;
+    width:380px;
     border-radius:16px;
     box-shadow:0 0 12px rgba(0,0,0,.15);
     z-index:500000;
@@ -1513,7 +1588,7 @@ function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
   chartDiv.appendChild(header);
 
   const headerLeft = document.createElement('div');
-  headerLeft.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0';
+  headerLeft.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:nowrap;width:100%';
   header.appendChild(headerLeft);
 
   const collapseBtn = document.createElement('button');
@@ -1539,7 +1614,7 @@ function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
 
   const hTitle = document.createElement('div');
   hTitle.textContent = 'Controls';
-  hTitle.style.cssText="font-weight:700;font-size:16px";
+  hTitle.style.cssText="font-weight:700;font-size:16px;flex:0 0 auto";
   headerLeft.appendChild(hTitle);
 
   const aiAdvisorBtn = document.createElement('button');
@@ -1548,8 +1623,8 @@ function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
   aiAdvisorBtn.title = 'Open AI advisor';
   aiAdvisorBtn.setAttribute('aria-label', 'Open AI advisor');
   aiAdvisorBtn.className = 'ui-btn';
-  aiAdvisorBtn.style.cssText = 'height:32px;padding:0 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto';
-  headerLeft.appendChild(aiAdvisorBtn);
+  aiAdvisorBtn.style.cssText = 'height:32px;padding:0 10px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto;white-space:nowrap';
+  // v65: action buttons are moved into the persistent row under the Controls title.
 
   const quickShowLabelsBtn = document.createElement('button');
   quickShowLabelsBtn.type = 'button';
@@ -1559,7 +1634,7 @@ function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
   quickShowLabelsBtn.setAttribute('aria-label', 'Show or hide 3D labels');
   quickShowLabelsBtn.className = 'ui-btn';
   quickShowLabelsBtn.style.cssText = 'height:32px;padding:0 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto;display:none';
-  headerLeft.appendChild(quickShowLabelsBtn);
+  // v65: Show Labels is also placed in the persistent action row below.
 
 
   const shareViewBtn = document.createElement('button');
@@ -1569,7 +1644,8 @@ function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
   shareViewBtn.setAttribute('aria-label', 'Copy share link');
   shareViewBtn.className = 'ui-btn';
   shareViewBtn.style.cssText = 'height:32px;padding:0 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto';
-  headerLeft.appendChild(shareViewBtn);
+  // HomeView v63: keep Share logic but do not render it in the top header.
+  // The visible Share button lives in quickLabelsRow below.
 
   const shareToast = document.createElement('div');
   shareToast.className = 'ui-card';
@@ -1631,11 +1707,13 @@ function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
   chartDiv.appendChild(panelBody);
 
   const quickLabelsRow = document.createElement('div');
-  quickLabelsRow.style.cssText = 'display:none;align-items:center;gap:8px;margin:0 0 8px;flex-wrap:wrap;';
+  quickLabelsRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin:0 0 10px;flex-wrap:wrap;pointer-events:auto;';
   const quickLabelsText = document.createElement('div');
   quickLabelsText.style.cssText = 'display:none';
   quickLabelsText.textContent = '';
   quickLabelsRow.appendChild(quickLabelsText);
+  // v65 layout: the main action buttons live under the Controls title, not on the title line.
+  quickLabelsRow.appendChild(aiAdvisorBtn);
   quickShowLabelsBtn.style.height = '32px';
   quickShowLabelsBtn.style.padding = '0 14px';
   quickShowLabelsBtn.style.borderRadius = '8px';
@@ -1653,24 +1731,25 @@ function hvGetMarkerEditorTargetsForBuilding(buildingIndex){
   quickLabelsRow.style.pointerEvents = 'auto';
   quickLabelsRow.appendChild(quickShowLabelsBtn);
 
-  const quickNavigationBtn = document.createElement('button');
-  quickNavigationBtn.type = 'button';
-  quickNavigationBtn.id = 'quickNavigationBtn';
-  quickNavigationBtn.textContent = 'Hide Navigation';
-  quickNavigationBtn.title = 'Show or hide navigation buttons';
-  quickNavigationBtn.setAttribute('aria-label', 'Show or hide navigation buttons');
-  quickNavigationBtn.className = 'ui-btn';
-  quickNavigationBtn.style.cssText = quickShowLabelsBtn.style.cssText || 'height:32px;padding:0 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto';
-  quickNavigationBtn.style.pointerEvents = 'auto';
-  quickNavigationBtn.style.position = 'relative';
-  quickNavigationBtn.style.zIndex = '500003';
-  quickNavigationBtn.style.touchAction = 'manipulation';
-  quickNavigationBtn.style.cursor = 'pointer';
-  quickNavigationBtn.style.userSelect = 'none';
-  quickNavigationBtn.style.minWidth = '120px';
+  const quickShareBtn = document.createElement('button');
+  quickShareBtn.type = 'button';
+  quickShareBtn.id = 'quickShareBtn';
+  quickShareBtn.textContent = 'Share Link';
+  quickShareBtn.title = 'Share this HomeView';
+  quickShareBtn.setAttribute('aria-label', 'Share this HomeView');
+  quickShareBtn.className = 'ui-btn';
+  quickShareBtn.style.cssText = 'width:auto;height:32px;padding:0 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap';
+  quickShareBtn.style.pointerEvents = 'auto';
+  quickShareBtn.style.position = 'relative';
+  quickShareBtn.style.zIndex = '500003';
+  quickShareBtn.style.touchAction = 'manipulation';
+  quickShareBtn.style.cursor = 'pointer';
+  quickShareBtn.style.userSelect = 'none';
+  quickShareBtn.style.minWidth = '74px';
 
-  quickLabelsRow.appendChild(quickNavigationBtn);
-  panelBody.appendChild(quickLabelsRow);
+  // v65: Share belongs in the persistent action row under the title, so it remains visible when Controls is collapsed.
+  try{ quickLabelsRow.appendChild(quickShareBtn); }catch(_){ }
+  try{ chartDiv.insertBefore(quickLabelsRow, panelBody); }catch(_){ chartDiv.appendChild(quickLabelsRow); }
 
 
   let collapsed=false;
@@ -2002,7 +2081,7 @@ function syncQuickShowLabelsButton(){
         const navOn = !!((typeof navigationLabelsEnabled !== 'undefined') ? navigationLabelsEnabled : true);
 
         if(typeof quickLabelsRow !== 'undefined' && quickLabelsRow){
-          quickLabelsRow.style.display = usable ? 'flex' : 'none';
+          quickLabelsRow.style.display = 'flex';
           quickLabelsRow.style.pointerEvents = 'auto';
         }
 
@@ -2015,14 +2094,15 @@ function syncQuickShowLabelsButton(){
           quickShowLabelsBtn.style.pointerEvents = 'auto';
         }
 
-        if(typeof quickNavigationBtn !== 'undefined' && quickNavigationBtn){
-          quickNavigationBtn.style.display = usable ? 'inline-flex' : 'none';
-          quickNavigationBtn.textContent = navOn ? 'Hide Navigation' : 'Show Navigation';
-          quickNavigationBtn.style.background = '#111';
-          quickNavigationBtn.style.color = '#fff';
-          quickNavigationBtn.style.webkitTextFillColor = quickNavigationBtn.style.color;
-          quickNavigationBtn.style.pointerEvents = 'auto';
+        if(typeof quickShareBtn !== 'undefined' && quickShareBtn){
+          quickShareBtn.style.display = 'inline-flex';
+          quickShareBtn.textContent = 'Share Link';
+          quickShareBtn.style.background = '#fff';
+          quickShareBtn.style.color = '#111';
+          quickShareBtn.style.webkitTextFillColor = quickShareBtn.style.color;
+          quickShareBtn.style.pointerEvents = 'auto';
         }
+        try{ hvSyncSettingsNavigationButton && hvSyncSettingsNavigationButton(); }catch(_){}
       }catch(e){ console.warn('Label/navigation controls sync failed:', e); }
     }
 
@@ -2049,6 +2129,7 @@ function syncQuickShowLabelsButton(){
         renderSelectionLabels();
         try{ if(typeof hvApplyLabelEntityVisibility === 'function') hvApplyLabelEntityVisibility(); }catch(_){}
         syncQuickShowLabelsButton();
+        try{ hvSyncSettingsNavigationButton(); }catch(_){}
         requestSceneRenderBurst(6);
       }catch(e){ console.warn('Navigation toggle failed:', e); }
       return false;
@@ -2059,7 +2140,7 @@ function syncQuickShowLabelsButton(){
       window.__hvLabelNavGlobalClickInstalled = true;
       document.addEventListener('click', function(ev){
         try{
-          const t = ev && ev.target ? ev.target.closest && ev.target.closest('#quickShowLabelsBtn,#quickNavigationBtn') : null;
+          const t = ev && ev.target ? ev.target.closest && ev.target.closest('#quickShowLabelsBtn,#quickShareBtn,#settingsNavigationBtn') : null;
           if(!t) return;
           ev.preventDefault();
           ev.stopPropagation();
@@ -2068,9 +2149,12 @@ function syncQuickShowLabelsButton(){
             infoLabelsEnabled = !((typeof infoLabelsEnabled !== 'undefined') ? !!infoLabelsEnabled : false);
             if(typeof showLabelsToggle !== 'undefined' && showLabelsToggle) showLabelsToggle.checked = !!infoLabelsEnabled;
             console.log('HomeView Show/Hide Labels clicked ->', !!infoLabelsEnabled);
-          }else if(t.id === 'quickNavigationBtn'){
+          }else if(t.id === 'quickShareBtn'){
+            try{ if(typeof shareViewBtn !== 'undefined' && shareViewBtn) shareViewBtn.click(); }catch(_){}
+            return;
+          }else if(t.id === 'settingsNavigationBtn'){
             navigationLabelsEnabled = !((typeof navigationLabelsEnabled !== 'undefined') ? !!navigationLabelsEnabled : true);
-            console.log('HomeView Show/Hide Navigation clicked ->', !!navigationLabelsEnabled);
+            console.log('HomeView Settings Navigation clicked ->', !!navigationLabelsEnabled);
           }
 
           renderSelectionLabels();
@@ -2845,6 +2929,7 @@ async function refreshFutureProjects(bIdx){
 
   // ===== Unit ad logo =====
   const unitAdWrap = document.createElement('div');
+  unitAdWrap.id = 'unitAdWrap';
   unitAdWrap.className = 'ui-card';
   unitAdWrap.style.cssText = "position:fixed;left:16px;bottom:16px;z-index:2150;padding:8px;border-radius:14px;display:none;align-items:center;justify-content:center;max-width:min(34vw,180px);max-height:92px;box-shadow:0 10px 26px rgba(0,0,0,.18)";
   const unitAdLink = document.createElement('a');
@@ -2855,7 +2940,22 @@ async function refreshFutureProjects(bIdx){
   unitAdImg.referrerPolicy = 'no-referrer';
   unitAdImg.decoding = 'async';
   unitAdImg.loading = 'eager';
-  unitAdImg.addEventListener('error', function(){ try{ unitAdWrap.style.display = 'none'; }catch(_){} });
+  unitAdImg.addEventListener('error', function(){
+    try{
+      // v65: on mobile some hosted image URLs render as a broken/question-mark image.
+      // Do not remove the external-link placement; show a clean link fallback instead.
+      unitAdImg.style.display = 'none';
+      unitAdLink.style.lineHeight = '1';
+      if(!unitAdLink.querySelector('.hv-ad-fallback')){
+        const fb = document.createElement('span');
+        fb.className = 'hv-ad-fallback';
+        fb.textContent = '↗';
+        fb.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:999px;background:#fff;color:#111;font-weight:900;font-size:20px;box-shadow:0 4px 12px rgba(0,0,0,.16)';
+        unitAdLink.appendChild(fb);
+      }
+      unitAdWrap.style.display = unitAdLink.getAttribute('href') ? 'flex' : 'none';
+    }catch(_){}
+  });
   unitAdImg.style.cssText = 'display:block;max-width:min(30vw,160px);max-height:72px;width:auto;height:auto;object-fit:contain;border-radius:8px';
   unitAdLink.appendChild(unitAdImg);
   unitAdWrap.appendChild(unitAdLink);
@@ -2897,6 +2997,8 @@ async function refreshFutureProjects(bIdx){
   function hideUnitAdLogo(){
     unitAdWrap.style.display = 'none';
     unitAdImg.removeAttribute('src');
+    unitAdImg.style.display = 'block';
+    try{ const fb = unitAdLink.querySelector('.hv-ad-fallback'); if(fb) fb.remove(); }catch(_){ }
     unitAdLink.removeAttribute('href');
     unitAdLink.style.cursor = 'default';
     unitAdImg.style.cursor = 'default';
@@ -2935,6 +3037,9 @@ async function refreshFutureProjects(bIdx){
       hideUnitAdLogo();
       return;
     }
+    try{ const fb = unitAdLink.querySelector('.hv-ad-fallback'); if(fb) fb.remove(); }catch(_){ }
+    unitAdImg.style.display = 'block';
+    unitAdLink.style.lineHeight = '0';
     unitAdImg.src = hvNormalizeImageAssetUrl(cfg.logoUrl);
     if(cfg.linkUrl){
       unitAdLink.href = cfg.linkUrl;
@@ -3400,11 +3505,32 @@ async function refreshFutureProjects(bIdx){
   displayOptionsWrap.innerHTML = `
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showJoystickToggle" type="checkbox"> Show camera joystick</label>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input id="showMinimapToggle" type="checkbox" checked> Show minimap</label>
+    <button id="settingsNavigationBtn" class="ui-btn" style="width:100%;border-radius:8px;padding:8px;cursor:pointer;font-weight:700">Hide Navigation</button>
     <button id="presentationModeBtn" class="ui-btn" style="width:100%;border-radius:8px;padding:8px;cursor:pointer;font-weight:700">Presentation Mode</button>`;
   gfxCard.appendChild(displayOptionsWrap);
   const showJoystickToggle = displayOptionsWrap.querySelector('#showJoystickToggle');
   const showMinimapToggle = displayOptionsWrap.querySelector('#showMinimapToggle');
+  if(showMinimapToggle){
+    showMinimapToggle.checked = !IS_MOBILE && minimapEnabledByUser;
+    if(IS_MOBILE){
+      try{
+        const lbl = showMinimapToggle.closest ? showMinimapToggle.closest('label') : null;
+        if(lbl) lbl.style.display = 'none';
+      }catch(_){ }
+    }
+  }
   const autoHideUIToggle = null; // HomeView v56: auto-hide UI removed
+  const settingsNavigationBtn = displayOptionsWrap.querySelector('#settingsNavigationBtn');
+  function hvSyncSettingsNavigationButton(){
+    try{
+      if(!settingsNavigationBtn) return;
+      const navOn = !!((typeof navigationLabelsEnabled !== 'undefined') ? navigationLabelsEnabled : true);
+      settingsNavigationBtn.textContent = navOn ? 'Hide Navigation' : 'Show Navigation';
+      settingsNavigationBtn.title = navOn ? 'Hide 3D navigation labels' : 'Show 3D navigation labels';
+      settingsNavigationBtn.setAttribute('aria-label', settingsNavigationBtn.title);
+    }catch(_){ }
+  }
+  hvSyncSettingsNavigationButton();
   const presentationModeBtn = displayOptionsWrap.querySelector('#presentationModeBtn');
   showJoystickToggle.checked = cameraJoystickEnabledByUser;
   const editorAuthWrap = document.createElement('div');
@@ -3774,7 +3900,7 @@ async function refreshFutureProjects(bIdx){
     try{ gfxCard.style.display = st.gfxCardDisplay || 'none'; }catch(_){ }
     try{ if(cinematicToolBtn){ cinematicToolBtn.style.display = st.cinBtnDisplay || (isEditorAdmin() ? 'flex' : 'none'); setElementSoftHidden(cinematicToolBtn, false); } }catch(_){ }
     try{ if(cinematicCard) cinematicCard.style.display = st.cinCardDisplay || 'none'; }catch(_){ }
-    if(miniRoot){ miniRoot.style.display = minimapEnabledByUser ? (st.miniDisplay || 'block') : 'none'; setElementSoftHidden(miniRoot, false); }
+    if(miniRoot){ miniRoot.style.display = (!IS_MOBILE && minimapEnabledByUser) ? (st.miniDisplay || 'block') : 'none'; setElementSoftHidden(miniRoot, false); }
     if(compassRoot){ compassRoot.style.display = st.compassDisplay || 'flex'; setElementSoftHidden(compassRoot, false); }
     try{
       if(cinematicSavedEntityVisuals){
@@ -4065,11 +4191,12 @@ async function refreshFutureProjects(bIdx){
     setJoystickVisible(currentMode === 'interior');
   });
   showMinimapToggle.addEventListener('change', function(){
-    minimapEnabledByUser = !!showMinimapToggle.checked;
+    minimapEnabledByUser = IS_MOBILE ? false : !!showMinimapToggle.checked;
+    if(IS_MOBILE) showMinimapToggle.checked = false;
     try{
       const miniRoot = document.getElementById('miniTopRight');
-      if(typeof mini !== 'undefined' && mini) { if(minimapEnabledByUser) mini.show(); else mini.hide(); }
-      if(miniRoot) miniRoot.style.display = minimapEnabledByUser ? 'block' : 'none';
+      if(typeof mini !== 'undefined' && mini) { if(!IS_MOBILE && minimapEnabledByUser) mini.show(); else mini.hide(); }
+      if(miniRoot) miniRoot.style.display = (!IS_MOBILE && minimapEnabledByUser) ? 'block' : 'none';
     }catch(_){ }
   });
 
@@ -4125,10 +4252,10 @@ async function refreshFutureProjects(bIdx){
       if(showLabelsToggle){ showLabelsToggle.checked = !!saved.labels; renderSelectionLabels(); }
       if(saved.minimap !== undefined){
         minimapEnabledByUser = !!saved.minimap;
-        showMinimapToggle.checked = minimapEnabledByUser;
+        showMinimapToggle.checked = !IS_MOBILE && minimapEnabledByUser;
       }
       setJoystickVisible(currentMode === 'interior');
-      try{ if(typeof mini !== 'undefined' && mini) { if(minimapEnabledByUser) mini.show(); else mini.hide(); } }catch(_){ }
+      try{ if(typeof mini !== 'undefined' && mini) { if(!IS_MOBILE && minimapEnabledByUser) mini.show(); else mini.hide(); } }catch(_){ }
       const compassRoot = getCompassRoot(); if(compassRoot) compassRoot.style.display = 'flex';
       presentationExitBtn.style.display = 'none';
       if(saved.collapsed !== undefined) setCollapsed(!!saved.collapsed);
@@ -4151,7 +4278,7 @@ async function refreshFutureProjects(bIdx){
     setElementSoftHidden(gfxBtn, uiAutoHidden);
     if(typeof cinematicToolBtn !== 'undefined' && cinematicToolBtn.style.display !== 'none') setElementSoftHidden(cinematicToolBtn, uiAutoHidden);
     const miniRoot = getMiniRoot();
-    if(miniRoot && minimapEnabledByUser) setElementSoftHidden(miniRoot, uiAutoHidden);
+    if(miniRoot && !IS_MOBILE && minimapEnabledByUser) setElementSoftHidden(miniRoot, uiAutoHidden);
     const compassRoot = getCompassRoot();
     if(compassRoot) setElementSoftHidden(compassRoot, uiAutoHidden);
   }
@@ -6029,31 +6156,14 @@ async function applyRoomModelForCurrent(actionValue){
     const hvNarrationAudioBtn = document.createElement('button');
     hvNarrationAudioBtn.type = 'button';
     hvNarrationAudioBtn.id = 'hvNarrationAudioBtn';
-    hvNarrationAudioBtn.textContent = '🎧 Hear narration';
-    hvNarrationAudioBtn.style.cssText = [
-      'position:fixed',
-      'right:14px',
-      'top:14px',
-      'z-index:9999',
-      'display:none',
-      'align-items:center',
-      'gap:8px',
-      'border:1px solid rgba(255,255,255,.55)',
-      'border-radius:999px',
-      'padding:10px 14px',
-      'background:rgba(0,0,0,.70)',
-      'color:#fff',
-      'font:800 13px system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif',
-      'box-shadow:0 10px 30px rgba(0,0,0,.28)',
-      'backdrop-filter:blur(8px)',
-      'cursor:pointer',
-      'touch-action:manipulation',
-      'max-width:min(260px,70vw)',
-      'white-space:nowrap',
-      'overflow:hidden',
-      'text-overflow:ellipsis'
-    ].join(';');
-    document.body.appendChild(hvNarrationAudioBtn);
+    hvNarrationAudioBtn.textContent = '🎧 Narration';
+    hvNarrationAudioBtn.title = 'Play narration';
+    hvNarrationAudioBtn.setAttribute('aria-label', 'Play narration');
+    hvNarrationAudioBtn.className = 'ui-btn';
+    hvNarrationAudioBtn.style.cssText = 'height:32px;padding:0 10px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;flex:0 0 auto;display:none;align-items:center;gap:5px;white-space:nowrap';
+    // Keep narration in the top controls row, next to AI Advisor.
+    // Because the header remains visible when Controls is collapsed, the narration button remains accessible too.
+    try{ headerLeft.insertBefore(hvNarrationAudioBtn, quickShareBtn); }catch(_){ headerLeft.appendChild(hvNarrationAudioBtn); }
 
     function hvNormalizeNarrationAudioUrl(raw){
       try{
@@ -6104,8 +6214,10 @@ async function applyRoomModelForCurrent(actionValue){
           return;
         }
         hvNarrationAudioBtn.style.display = 'flex';
-        hvNarrationAudioBtn.textContent = hvNarrationAudio.paused ? '🎧 Hear narration' : '⏸ Pause narration';
+        hvNarrationAudioBtn.textContent = hvNarrationAudio.paused ? '🎧 Narration' : '⏸ Pause';
         hvNarrationAudioBtn.title = hvActiveNarrationAudioLabel ? ('Narration: ' + hvActiveNarrationAudioLabel) : 'HomeView narration';
+        hvNarrationAudioBtn.style.background = hvNarrationAudio.paused ? '#fff' : '#111';
+        hvNarrationAudioBtn.style.color = hvNarrationAudio.paused ? '#111' : '#fff';
       }catch(_){ }
     }
 
@@ -6189,7 +6301,7 @@ async function applyRoomModelForCurrent(actionValue){
         }catch(_){ }
         hvNarrationAudio.play().then(hvSetNarrationAudioButtonState).catch(function(err){
           console.warn('HomeView narration could not play:', err, hvActiveNarrationAudioUrl);
-          hvNarrationAudioBtn.textContent = '🎧 Tap again to play';
+          hvNarrationAudioBtn.textContent = '🎧 Tap again';
         });
       }else{
         hvNarrationAudio.pause();
@@ -7018,7 +7130,7 @@ function fmtMoneyNoDash(n){
       const root=document.createElement('div');
       root.id='miniTopRight';
       root.className='ui-card';
-      root.style.cssText="position:fixed;right:16px;top:16px;width:260px;height:260px;border-radius:12px;z-index:2100;overflow:hidden;display:block;background:#fff";
+      root.style.cssText="position:fixed;right:16px;top:16px;width:260px;height:260px;border-radius:12px;z-index:2100;overflow:hidden;display:" + (IS_MOBILE ? 'none' : 'block') + ";background:#fff";
       document.body.appendChild(root);
 
       const stage=document.createElement('div');
@@ -7169,7 +7281,7 @@ function fmtMoneyNoDash(n){
 
       return {
         root,
-        show(){ root.style.display = (minimapEnabledByUser && currentMode === 'exterior') ? 'block' : 'none'; },
+        show(){ root.style.display = (!IS_MOBILE && minimapEnabledByUser && currentMode === 'exterior') ? 'block' : 'none'; },
         hide(){ root.style.display='none'; },
         setMode,
         setPane(pane){ if(pane === 'ai'){ setAiAdvisorOpen(true); return; } setMode('city'); },
